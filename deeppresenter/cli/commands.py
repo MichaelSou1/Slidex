@@ -9,7 +9,7 @@ import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 import typer
 import yaml

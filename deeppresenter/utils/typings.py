@@ -125,9 +125,9 @@ class ChatMessage(BaseModel):
 
 class ToolSet(BaseModel):
     include_tool_servers: list[str] | Literal["all"] = "all"
-    exclude_tool_servers: list[str] = []
-    include_tools: list[str] = []
-    exclude_tools: list[str] = []
+    exclude_tool_servers: list[str] = Field(default_factory=list)
+    include_tools: list[str] = Field(default_factory=list)
+    exclude_tools: list[str] = Field(default_factory=list)
 
     def __add__(self, other: "ToolSet"):
         if self.include_tool_servers == "all" or other.include_tool_servers == "all":
@@ -180,13 +180,13 @@ class PowerPointType(StrEnum):
 
 class InputRequest(BaseModel):
     instruction: str
-    attachments: list[str] = []
+    attachments: list[str] = Field(default_factory=list)
     num_pages: str | None = None
     template: str | None = None
     powerpoint_type: PowerPointType = PowerPointType.WIDE_SCREEN
     convert_type: ConvertType = ConvertType.DEEPPRESENTER
     enable_planner: bool = False
-    extra_info: dict[str, Any] = {}
+    extra_info: dict[str, Any] = Field(default_factory=dict)
 
     def copy_to_workspace(self, workspace: Path):
         """Copy attachments to workspace"""

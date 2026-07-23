@@ -39,3 +39,33 @@ long_context_model:
 #   # sampling_parameters:
 #   #   response_format: "b64_json"
 #   #   extra_body: { "watermark": False }
+
+# Slidex critic and artifact configuration. Endpoints are OpenAI-compatible.
+critic_model:
+  base_url: "https://openrouter.ai/api/v1"
+  model: "google/gemini-3-pro-preview"
+  api_key: "your_key"
+
+# semantic_model is optional and remains independent from policy history.
+# semantic_model:
+#   base_url: "https://openrouter.ai/api/v1"
+#   model: "anthropic/claude-sonnet-4.5"
+#   api_key: "your_key"
+
+slidex:
+  taxonomy_version: "1.0"
+  router_version: "1.0"
+  reward_version: "1.0"
+  safety_margin_px: 24
+  alignment_tolerance_px: 2
+  overlap_tolerance_px: 1
+  palette_threshold: 0.1
+  max_repair_rounds: 3
+  max_episode_steps: 20
+  command_timeout_seconds: 300
+  strict_export: true
+  pptx_rerender: true
+  reference_policy: "on_defer"
+  max_workspace_bytes: 2147483648
+  max_artifacts_per_episode: 1000
+  artifact_retention_seconds: 604800

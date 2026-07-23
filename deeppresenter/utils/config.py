@@ -10,7 +10,7 @@ import yaml
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 from openai.types.images_response import ImagesResponse
-from pydantic import BaseModel, Field, PrivateAttr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from deeppresenter.utils.constants import (
     CONTEXT_LENGTH_LIMIT,
@@ -382,8 +382,33 @@ class LLM(BaseModel):
             )
 
 
+class SlidexConfig(BaseModel):
+    """Configuration for versioned Slidex inspection and persistence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    taxonomy_version: str = "1.0"
+    router_version: str = "1.0"
+    reward_version: str = "1.0"
+    safety_margin_px: float = Field(default=24, ge=0)
+    alignment_tolerance_px: float = Field(default=2, ge=0)
+    overlap_tolerance_px: float = Field(default=1, ge=0)
+    palette_threshold: float = Field(default=0.1, ge=0, le=1)
+    max_repair_rounds: int = Field(default=3, ge=0)
+    max_episode_steps: int = Field(default=20, gt=0)
+    command_timeout_seconds: int = Field(default=300, gt=0)
+    strict_export: bool = True
+    pptx_rerender: bool = True
+    reference_policy: Literal["never", "on_defer", "always"] = "on_defer"
+    max_workspace_bytes: int = Field(default=2 * 1024**3, gt=0)
+    max_artifacts_per_episode: int = Field(default=1000, gt=0)
+    artifact_retention_seconds: int = Field(default=7 * 24 * 3600, ge=0)
+
+
 class DeepPresenterConfig(BaseModel):
     """DeepPresenter Global Configuration"""
+
+    model_config = ConfigDict(extra="forbid")
 
     # config
     multiagent_mode: bool = Field(
@@ -425,6 +450,13 @@ class DeepPresenterConfig(BaseModel):
     t2i_model: LLM | None = Field(
         default=None, description="Text-to-image model configuration"
     )
+    critic_model: LLM | None = Field(
+        default=None, description="Independent critic model configuration"
+    )
+    semantic_model: LLM | None = Field(
+        default=None, description="Optional independent semantic critic model"
+    )
+    slidex: SlidexConfig = Field(default_factory=SlidexConfig)
 
     def model_post_init(self, context):
         if self.context_window is None:

@@ -1,0 +1,266 @@
+"""Versioned domain models for Slidex artifacts and inspection results."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+SCHEMA_VERSION = "2.0"
+
+
+class SlidexModel(BaseModel):
+    """Strict base model shared by persisted Slidex schemas."""
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+
+class DefectClass(StrEnum):
+    """Version 1 defect taxonomy; new values require a taxonomy version bump."""
+
+    G1 = "G1"
+    G2 = "G2"
+    G3 = "G3"
+    G4 = "G4"
+    G5 = "G5"
+    G6 = "G6"
+    G7 = "G7"
+    S1 = "S1"
+    S2 = "S2"
+    S3 = "S3"
+    S4 = "S4"
+    S5 = "S5"
+    S6 = "S6"
+
+
+class InspectionStatus(StrEnum):
+    PASS = "pass"
+    FAIL = "fail"
+    DEFER = "defer"
+    NOT_APPLICABLE = "not_applicable"
+    ERROR = "error"
+
+
+class EvidenceSource(StrEnum):
+    DECLARED_IR = "declared_ir"
+    COMPUTED_IR = "computed_ir"
+    RENDER = "render"
+    CLEAN_REFERENCE = "clean_reference"
+    DECK_TEXT = "deck_text"
+
+
+class BoundingBox(SlidexModel):
+    """A box in a page-relative coordinate system."""
+
+    x: float = Field(ge=0)
+    y: float = Field(ge=0)
+    width: float = Field(gt=0)
+    height: float = Field(gt=0)
+    page_width: float = Field(gt=0)
+    page_height: float = Field(gt=0)
+    unit: Literal["px", "pt", "in", "mm"] = "px"
+    coordinate_system: Literal["top_left"] = "top_left"
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> BoundingBox:
+        if self.x + self.width > self.page_width or self.y + self.height > self.page_height:
+            raise ValueError("bounding box exceeds page bounds")
+        return self
+
+
+class SlideElement(SlidexModel):
+    """A stable, recursively nested slide element."""
+
+    element_id: str = Field(min_length=1, pattern=r"^\S+$")
+    tag: str = Field(min_length=1)
+    element_type: str | None = None
+    semantic_role: str | None = None
+    text: str = ""
+    bbox: BoundingBox | None = None
+    style: dict[str, Any] = Field(default_factory=dict)
+    parent_id: str | None = None
+    children: list[SlideElement] = Field(default_factory=list)
+
+
+class DeclaredSlideIR(SlidexModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    slide_id: str = Field(min_length=1)
+    page_width: float = Field(gt=0)
+    page_height: float = Field(gt=0)
+    unit: Literal["px", "pt", "in", "mm"] = "px"
+    elements: list[SlideElement] = Field(default_factory=list)
+    containers: list[str] = Field(default_factory=list)
+    theme_tokens: dict[str, Any] = Field(default_factory=dict)
+    expected_roles: dict[str, str] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_elements(self) -> DeclaredSlideIR:
+        _validate_element_tree(self.elements)
+        return self
+
+
+class ComputedSlideElement(SlideElement):
+    computed_style: dict[str, str] = Field(default_factory=dict)
+    scroll_width: float = Field(ge=0, default=0)
+    scroll_height: float = Field(ge=0, default=0)
+    visible: bool = True
+    stacking_order: int = 0
+    font_fallback: list[str] = Field(default_factory=list)
+
+
+class ComputedSlideIR(SlidexModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    slide_id: str = Field(min_length=1)
+    page_width: float = Field(gt=0)
+    page_height: float = Field(gt=0)
+    elements: list[ComputedSlideElement] = Field(default_factory=list)
+    browser: str
+    browser_version: str
+    warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_elements(self) -> ComputedSlideIR:
+        _validate_element_tree(self.elements)
+        return self
+
+
+class RendererInfo(SlidexModel):
+    name: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class RenderArtifact(SlidexModel):
+    kind: Literal["html", "pdf", "pptx_rerender"]
+    uri: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    renderer: RendererInfo
+
+
+class Provenance(SlidexModel):
+    parent_artifact_id: str | None = None
+    creation_action: str = Field(min_length=1)
+    model: str | None = None
+    sampling_parameters: dict[str, Any] = Field(default_factory=dict)
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    versions: dict[str, str] = Field(default_factory=dict)
+
+
+class SlideArtifact(SlidexModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    artifact_id: str = Field(min_length=1)
+    source_uri: str
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    declared_ir: DeclaredSlideIR
+    computed_ir: ComputedSlideIR | None = None
+    renders: list[RenderArtifact] = Field(default_factory=list)
+    assets: dict[str, str] = Field(default_factory=dict)
+    provenance: Provenance
+
+    @model_validator(mode="after")
+    def validate_slide_identity(self) -> SlideArtifact:
+        if self.computed_ir and self.computed_ir.slide_id != self.declared_ir.slide_id:
+            raise ValueError("declared and computed IR slide IDs differ")
+        return self
+
+
+class Evidence(SlidexModel):
+    source: EvidenceSource
+    detail: str = Field(min_length=1)
+    element_ids: list[str] = Field(default_factory=list)
+    artifact_uri: str | None = None
+
+
+class InspectionResult(SlidexModel):
+    defect_class: DefectClass
+    status: InspectionStatus
+    severity: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    evidence: list[Evidence] = Field(default_factory=list)
+    element_ids: list[str] = Field(default_factory=list)
+    repair_hint: str | None = None
+    latency_ms: float = Field(ge=0, default=0)
+    cost: float = Field(ge=0, default=0)
+    inspector_version: str = Field(min_length=1)
+    raw_output_uri: str | None = None
+
+
+class InspectionReport(SlidexModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    artifact_id: str
+    slide_id: str
+    results: list[InspectionResult] = Field(default_factory=list)
+    summary: dict[str, int | float | str] = Field(default_factory=dict)
+    router_version: str
+    taxonomy_version: str
+
+
+class RewardBreakdown(SlidexModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    hard_constraints: dict[str, bool] = Field(default_factory=dict)
+    soft_scores: dict[str, float] = Field(default_factory=dict)
+    cost_penalty: float = Field(ge=0, default=0)
+    aggregate: float
+    gating_reason: str | None = None
+    reward_version: str
+
+
+class ArtifactReference(SlidexModel):
+    uri: str
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    media_type: str | None = None
+    size_bytes: int = Field(ge=0)
+
+
+class TrajectoryStep(SlidexModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    step_index: int = Field(ge=0)
+    action: dict[str, Any]
+    observation: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[ArtifactReference] = Field(default_factory=list)
+    reward: RewardBreakdown | None = None
+    strict_validation: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class EpisodeManifest(SlidexModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    episode_id: str = Field(min_length=1)
+    workspace_uri: str
+    status: Literal["active", "completed", "failed"] = "active"
+    artifact_ids: list[str] = Field(default_factory=list)
+    steps: list[TrajectoryStep] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    versions: dict[str, str] = Field(default_factory=dict)
+
+
+class ArtifactManifest(SlidexModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    artifact_id: str
+    files: dict[str, ArtifactReference] = Field(default_factory=dict)
+    provenance: Provenance
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+def _validate_element_tree(elements: list[SlideElement]) -> None:
+    seen: set[str] = set()
+
+    def visit(element: SlideElement, expected_parent: str | None) -> None:
+        if element.element_id in seen:
+            raise ValueError(f"duplicate element ID: {element.element_id}")
+        if element.parent_id != expected_parent:
+            raise ValueError(
+                f"invalid parent for {element.element_id}: expected {expected_parent!r}"
+            )
+        seen.add(element.element_id)
+        for child in element.children:
+            visit(child, element.element_id)
+
+    for root in elements:
+        visit(root, None)

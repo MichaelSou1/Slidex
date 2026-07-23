@@ -208,66 +208,68 @@ Research -> Design           reset -> step -> reward
 
 # Phase 2：建立 Slidex 领域模型与 Artifact Store
 
+> 状态（2026-07-24）：版本化领域 schema、稳定元素 ID 约束、原子 Artifact Store、严格配置和无模型测试已完成。
+
 ## 2.1 定义版本化 schema
 
-- [ ] 定义 `DefectClass`，至少包含 G1–G7、S1–S6，并允许未来扩展。
-- [ ] 定义 `InspectionStatus = pass | fail | defer | not_applicable | error`。
-- [ ] 定义 `EvidenceSource = declared_ir | computed_ir | render | clean_reference | deck_text`。
-- [ ] 定义 `BoundingBox`，明确坐标系、单位、页面尺寸和序列化格式。
-- [ ] 定义 `SlideElement`：稳定 ID、tag/type、semantic role、text、bbox、style、parent/children。
-- [ ] 定义 `DeclaredSlideIR`：源文件声明的结构、容器、主题 token 和预期角色。
-- [ ] 定义 `ComputedSlideIR`：浏览器实际 bbox、computed style、scroll size、visibility、stacking 和 font fallback。
-- [ ] 定义 `RenderArtifact`：HTML render、PDF render、PPTX re-render 的路径、尺寸、哈希和 renderer 信息。
-- [ ] 定义 `SlideArtifact`，聚合 source、declared IR、computed IR、renders 和 provenance。
-- [ ] 定义 `InspectionResult`：class、status、severity、confidence、evidence、element IDs、repair hint、latency、cost、inspector version。
-- [ ] 定义 `InspectionReport`：单页结果列表、summary、router/taxonomy version。
-- [ ] 定义 `RewardBreakdown`：hard constraints、soft scores、cost penalty、aggregate 和 gating reason。
-- [ ] 定义 `TrajectoryStep` 和 `EpisodeManifest`。
-- [ ] 所有 mutable list/dict 使用 `default_factory`，清理现有 Pydantic mutable defaults。
+- [x] 定义 `DefectClass`，至少包含 G1–G7、S1–S6，并允许未来扩展。
+- [x] 定义 `InspectionStatus = pass | fail | defer | not_applicable | error`。
+- [x] 定义 `EvidenceSource = declared_ir | computed_ir | render | clean_reference | deck_text`。
+- [x] 定义 `BoundingBox`，明确坐标系、单位、页面尺寸和序列化格式。
+- [x] 定义 `SlideElement`：稳定 ID、tag/type、semantic role、text、bbox、style、parent/children。
+- [x] 定义 `DeclaredSlideIR`：源文件声明的结构、容器、主题 token 和预期角色。
+- [x] 定义 `ComputedSlideIR`：浏览器实际 bbox、computed style、scroll size、visibility、stacking 和 font fallback。
+- [x] 定义 `RenderArtifact`：HTML render、PDF render、PPTX re-render 的路径、尺寸、哈希和 renderer 信息。
+- [x] 定义 `SlideArtifact`，聚合 source、declared IR、computed IR、renders 和 provenance。
+- [x] 定义 `InspectionResult`：class、status、severity、confidence、evidence、element IDs、repair hint、latency、cost、inspector version。
+- [x] 定义 `InspectionReport`：单页结果列表、summary、router/taxonomy version。
+- [x] 定义 `RewardBreakdown`：hard constraints、soft scores、cost penalty、aggregate 和 gating reason。
+- [x] 定义 `TrajectoryStep` 和 `EpisodeManifest`。
+- [x] 所有 mutable list/dict 使用 `default_factory`，清理现有 Pydantic mutable defaults。
 
 ## 2.2 稳定元素 ID
 
-- [ ] 规定生成 HTML 中每个可检查元素必须有 `data-slidex-id`。
-- [ ] Design prompt 要求 ID 在修订时保持稳定，不得每轮全部重编号。
-- [ ] 浏览器 extractor 对缺失 ID 的元素生成 deterministic fallback ID，并发出 warning。
-- [ ] ID 必须能跨 source HTML、DOM snapshot、render annotation、critic report 和 repair action 关联。
-- [ ] 对重复 ID、空 ID 和层级变化增加 validation。
+- [x] 规定生成 HTML 中每个可检查元素必须有 `data-slidex-id`。
+- [x] Design prompt 要求 ID 在修订时保持稳定，不得每轮全部重编号。
+- [x] 浏览器 extractor 对缺失 ID 的元素生成 deterministic fallback ID，并发出 warning。
+- [x] ID 必须能跨 source HTML、DOM snapshot、render annotation、critic report 和 repair action 关联。
+- [x] 对重复 ID、空 ID 和层级变化增加 validation。
 
 ## 2.3 Artifact Store
 
-- [ ] 为每次 episode 创建独立 workspace，不复用可变全局目录。
-- [ ] 采用 `artifacts/<artifact_id>/` 保存 source、IR、renders、inspection 和 reward。
-- [ ] artifact ID 使用内容哈希或 UUID + 内容哈希，避免仅靠文件名。
-- [ ] 保存 `manifest.json`：父 artifact、创建 action、模型、sampling 参数、工具调用和版本。
-- [ ] 对 HTML、CSS、图片、IR JSON、PNG、PDF、PPTX 分别计算 SHA-256。
-- [ ] 记录 renderer 名称和版本，如 Chromium、html2pptx、LibreOffice。
-- [ ] artifact 写入采用临时目录 + atomic rename，避免 API 并发读到半成品。
-- [ ] 大文件不嵌入 trajectory JSONL，只记录 artifact URI 和 hash。
-- [ ] 增加 workspace/artifact 配额和清理策略，但不得在活跃 episode 中自动删除。
+- [x] 为每次 episode 创建独立 workspace，不复用可变全局目录。
+- [x] 采用 `artifacts/<artifact_id>/` 保存 source、IR、renders、inspection 和 reward。
+- [x] artifact ID 使用内容哈希或 UUID + 内容哈希，避免仅靠文件名。
+- [x] 保存 `manifest.json`：父 artifact、创建 action、模型、sampling 参数、工具调用和版本。
+- [x] 对 HTML、CSS、图片、IR JSON、PNG、PDF、PPTX 分别计算 SHA-256。
+- [x] 记录 renderer 名称和版本，如 Chromium、html2pptx、LibreOffice。
+- [x] artifact 写入采用临时目录 + atomic rename，避免 API 并发读到半成品。
+- [x] 大文件不嵌入 trajectory JSONL，只记录 artifact URI 和 hash。
+- [x] 增加 workspace/artifact 配额和清理策略，但不得在活跃 episode 中自动删除。
 
 ## 2.4 配置模型
 
-- [ ] 在 `DeepPresenterConfig` 中增加 `slidex` 子配置。
-- [ ] 增加 `taxonomy_version`、`router_version`、`reward_version`。
-- [ ] 增加安全边距、alignment tolerance、overlap tolerance、palette threshold。
-- [ ] 增加 max repair rounds、max episode steps、command timeout。
-- [ ] 增加 strict export、PPTX re-render 和 reference policy 开关。
-- [ ] 增加独立 `critic_model` 和可选 `semantic_model`，不能默认与 policy history 共享状态。
-- [ ] 为旧配置提供清晰迁移默认值；未知关键字段应报错而不是静默忽略。
-- [ ] 更新 `deeppresenter/config.yaml.example` 展示 OpenAI-compatible outbound endpoint 和 critic 配置。
+- [x] 在 `DeepPresenterConfig` 中增加 `slidex` 子配置。
+- [x] 增加 `taxonomy_version`、`router_version`、`reward_version`。
+- [x] 增加安全边距、alignment tolerance、overlap tolerance、palette threshold。
+- [x] 增加 max repair rounds、max episode steps、command timeout。
+- [x] 增加 strict export、PPTX re-render 和 reference policy 开关。
+- [x] 增加独立 `critic_model` 和可选 `semantic_model`，不能默认与 policy history 共享状态。
+- [x] 为旧配置提供清晰迁移默认值；未知关键字段应报错而不是静默忽略。
+- [x] 更新 `deeppresenter/config.yaml.example` 展示 OpenAI-compatible outbound endpoint 和 critic 配置。
 
 ## 2.5 Schema 测试
 
-- [ ] 为每个 Pydantic model 增加 round-trip JSON test。
-- [ ] 测试旧版本 manifest 的显式拒绝或 migration。
-- [ ] 测试坐标越界、负尺寸、重复 ID、未知 status。
-- [ ] 生成一份单页 artifact fixture 并验证所有 hash 可复算。
+- [x] 为每个 Pydantic model 增加 round-trip JSON test。
+- [x] 测试旧版本 manifest 的显式拒绝或 migration。
+- [x] 测试坐标越界、负尺寸、重复 ID、未知 status。
+- [x] 生成一份单页 artifact fixture 并验证所有 hash 可复算。
 
 ### Phase 2 退出条件
 
-- [ ] 一页 HTML 可以被表示为完整 `SlideArtifact`。
-- [ ] source、computed IR、render 和 provenance 可通过稳定 ID 关联。
-- [ ] schema 和 artifact manifest 可独立于 agent/LLM 测试。
+- [x] 一页 HTML 可以被表示为完整 `SlideArtifact`。
+- [x] source、computed IR、render 和 provenance 可通过稳定 ID 关联。
+- [x] schema 和 artifact manifest 可独立于 agent/LLM 测试。
 
 ---
 
