@@ -96,103 +96,109 @@ Research -> Design           reset -> step -> reward
 
 # Phase 0：建立基线与改造护栏
 
+> 状态（2026-07-24）：核心测试门禁已建立；完整的三类 fixture 与 HTML/PDF/history 基线归档仍待补齐。
+
 ## 0.1 固定当前行为
 
 - [ ] 记录当前 `pptagent generate` 的最小可运行调用和输出目录结构。
 - [ ] 选取一个 3 页纯文本样例、一个含图片样例、一个故意 overflow 的 HTML 样例作为 smoke fixtures。
 - [ ] 记录当前 HTML、PDF、PPTX 输出及 `.history/` 文件格式。
 - [ ] 明确哪些集成测试需要 Playwright、Node、Poppler、LibreOffice 或模型凭证。
-- [ ] 将测试分成 `unit`、`browser`、`export`、`llm`、`api`、`rl` 六类。
+- [x] 将测试分成 `unit`、`browser`、`export`、`llm`、`api`、`rl` 六类。
 
 ## 0.2 建立基础测试门禁
 
-- [ ] 为 `DeepPresenterConfig` 加载增加无网络 unit test。
-- [ ] 为 `InputRequest.copy_to_workspace()` 增加文件和目录测试。
-- [ ] 为 `AgentEnv.register_tool()` 增加 sync/async local tool 测试。
-- [ ] 为 `convert_html_to_pptx()` 增加 strict validation smoke test。
+- [x] 为 `DeepPresenterConfig` 加载增加无网络 unit test。
+- [x] 为 `InputRequest.copy_to_workspace()` 增加文件和目录测试。
+- [x] 为 `AgentEnv.register_tool()` 增加 sync/async local tool 测试。
+- [x] 为 `convert_html_to_pptx()` 增加 strict validation smoke test。
 - [ ] 为 Playwright HTML → image/PDF 增加 browser smoke test。
-- [ ] 保存基线测试结果，后续每个 phase 都运行最窄相关集合。
+- [x] 保存基线测试结果，后续每个 phase 都运行最窄相关集合。
+  - 基线命令：`PYTHONPATH=. .venv/bin/pytest -q -m "unit or browser or export" deeppresenter/test`
+  - 结果（2026-07-24）：`7 passed`；`ruff check` 通过。
 
 ### Phase 0 退出条件
 
-- [ ] 无模型凭证时可运行 unit tests。
-- [ ] 有浏览器依赖时可运行单页 HTML render smoke test。
-- [ ] 已有最小输入可以验证后续 Docker 移除、critic 和 API 改造没有破坏主链路。
+- [x] 无模型凭证时可运行 unit tests。
+- [x] 有浏览器依赖时可运行单页 HTML render smoke test。
+- [x] 已有最小输入可以验证后续 Docker 移除、critic 和 API 改造没有破坏主链路。
 
 ---
 
 # Phase 1：彻底切断 Docker 依赖
 
+> 状态（2026-07-24）：DeepPresenter 主运行时已切断 Docker；端到端 PDF/inspection、兼容 `generate` 实跑仍待验证。legacy `pptagent/docker/` 不属于本阶段删除范围。
+
 ## 1.1 删除 Python 运行时依赖
 
-- [ ] 从 `pyproject.toml` 主 dependencies 删除 `docker>=7.1.0`。
-- [ ] 检查 `uv.lock`，运行 `uv lock` 清理仅由 Docker SDK 引入的依赖。
-- [ ] 从 `deeppresenter/agents/env.py` 删除 `import docker`、`DockerException` 和 `NotFound`。
-- [ ] 删除 `AgentEnv.__aenter__()` 中连接 Docker daemon、查找同名容器和强制退出的代码。
-- [ ] 删除只服务于 Docker volume mapping 的 `DEEPPRESENTER_HOST_WORKSPACE_BASE` 分支。
-- [ ] 保留 `WORKSPACE`、`WORKSPACE_ID`、`CONFIG_FILE` 等普通子进程环境变量。
+- [x] 从 `pyproject.toml` 主 dependencies 删除 `docker>=7.1.0`。
+- [x] 检查并更新 `uv.lock`，清理 Docker SDK package 和根项目依赖记录。
+- [x] 从 `deeppresenter/agents/env.py` 删除 `import docker`、`DockerException` 和 `NotFound`。
+- [x] 删除 `AgentEnv.__aenter__()` 中连接 Docker daemon、查找同名容器和强制退出的代码。
+- [x] 删除只服务于 Docker volume mapping 的 `DEEPPRESENTER_HOST_WORKSPACE_BASE` 分支。
+- [x] 保留 `WORKSPACE`、`WORKSPACE_ID`、`CONFIG_FILE` 等普通子进程环境变量。
 
 ## 1.2 用本地工具替代 sandbox MCP
 
-- [ ] 在 `deeppresenter/tools/filesystem.py` 实现 `read_file(path)`。
-- [ ] 实现 `write_file(path, content)`，自动创建父目录。
-- [ ] 实现 `edit_file(path, old, new)`，要求唯一匹配，避免模糊写入。
-- [ ] 实现 `list_files(path, pattern)`。
-- [ ] 实现 `search_files(query, path, glob)`，优先使用 `rg`。
-- [ ] 实现 `run_command(command, cwd, timeout)`，返回 exit code、stdout、stderr。
-- [ ] 实现统一的 workspace path resolver，拒绝路径逃逸到 workspace 外部；若研究模式需要外部只读附件，使用显式 allowlist。
-- [ ] 限制命令工作目录在 workspace 内，不提供 Docker 式安全承诺，但保证路径和超时行为可预测。
-- [ ] 在 `AgentLoop` 创建 `AgentEnv` 后注册这些 local tools。
-- [ ] 确认 local tool 输出仍经过当前 cutoff、history 和 timing 记录。
+- [x] 在 `deeppresenter/tools/filesystem.py` 实现 `read_file(path)`。
+- [x] 实现 `write_file(path, content)`，自动创建父目录。
+- [x] 实现 `edit_file(path, old, new)`，要求唯一匹配，避免模糊写入。
+- [x] 实现 `list_files(path, pattern)`。
+- [x] 实现 `search_files(query, path, glob)`，优先使用 `rg`。
+- [x] 实现 `run_command(command, cwd, timeout)`，返回 exit code、stdout、stderr。
+- [x] 实现统一的 workspace path resolver，拒绝路径逃逸到 workspace 外部；附件由 `InputRequest.copy_to_workspace()` 显式复制进入 workspace。
+- [x] 限制命令工作目录在 workspace 内，不提供 Docker 式安全承诺，但保证路径和超时行为可预测。
+- [x] 在 `AgentLoop` 创建 `AgentEnv` 后注册这些 local tools。
+- [x] 确认 local tool 输出仍经过当前 cutoff、history 和 timing 记录。
 
 ## 1.3 修改角色工具配置
 
-- [ ] 将 `deeppresenter/roles/Design.yaml` 中 `include_tool_servers: [sandbox]` 改为显式 local filesystem tools。
-- [ ] 将 `deeppresenter/roles/PPTAgent.yaml` 中的 sandbox 依赖替换为 local tools。
-- [ ] 检查 `Research.yaml`、`Planner.yaml`、`SubAgent.yaml` 的 `include_tool_servers: all`，确保不会隐式依赖已删除的 sandbox。
-- [ ] 保证 `delegate_subagent`、`thinking`、`finalize` 等 local tools 仍可被显式加入。
-- [ ] 当某个 role 配置引用不存在的 server/tool 时，启动阶段给出明确配置错误。
+- [x] 将 `deeppresenter/roles/Design.yaml` 中 `include_tool_servers: [sandbox]` 改为显式 local filesystem tools。
+- [x] 将 `deeppresenter/roles/PPTAgent.yaml` 中的 sandbox 依赖替换为 local tools。
+- [x] 检查 `Research.yaml`、`Planner.yaml`、`SubAgent.yaml` 的 `include_tool_servers: all`，确保不会隐式依赖已删除的 sandbox。
+- [x] 保证 `delegate_subagent`、`thinking`、`finalize` 等 local tools 仍可被显式加入。
+- [x] 当某个 role 配置引用不存在的 server/tool 时，启动阶段给出明确配置错误。
 
 ## 1.4 清理 MCP 默认配置
 
-- [ ] 从 `deeppresenter/mcp.json.example` 删除 `sandbox` Docker server 条目。
-- [ ] 检查 onboarding 生成的 MCP 配置不会再次加入 sandbox。
-- [ ] 保留 `any2markdown`、`task`、`deeppresenter`、`pptagent`、`tool_agents`、`search` 等 stdio MCP。
+- [x] 从 `deeppresenter/mcp.json.example` 删除 `sandbox` Docker server 条目。
+- [x] 检查 onboarding 生成的 MCP 配置不会再次加入 sandbox。
+- [x] 保留 `any2markdown`、`task`、`deeppresenter`、`pptagent`、`tool_agents`、`search` 等 stdio MCP。
 - [ ] 将新 critic 尽量做成进程内 service；只有确有跨进程复用需求时才暴露 MCP wrapper。
 
 ## 1.5 清理 onboarding 和平台依赖
 
-- [ ] 从 `deeppresenter/cli/commands.py:onboard()` 删除 `check_docker_image()`。
-- [ ] 从 `deeppresenter/cli/dependency.py` 删除 Docker 安装、镜像构建和检查函数。
-- [ ] 删除 CLI 中相关 imports 和提示文案。
-- [ ] 保留并验证 Node/npm、Playwright Chromium、Poppler 检查。
-- [ ] Linux 本地模型服务不再通过 `deeppresenter/serve.sh` 的 Docker/SGLang 方案启动。
-- [ ] 将 Linux 本地模型服务改为显式外部 OpenAI-compatible endpoint，或使用与 macOS 一致的 `llama-server` 可执行文件。
-- [ ] 将 `serve` 命令与“启动 Slidex API”区分；本地模型服务命令应改名或标注为 model server。
+- [x] 从 `deeppresenter/cli/commands.py:onboard()` 删除 `check_docker_image()`。
+- [x] 从 `deeppresenter/cli/dependency.py` 删除 Docker 安装、镜像构建和检查函数。
+- [x] 删除 CLI 中相关 imports 和提示文案。
+- [x] 保留并验证 Node/npm、Playwright Chromium、Poppler 检查。
+- [x] Linux 本地模型服务不再通过 `deeppresenter/serve.sh` 的 Docker/SGLang 方案启动。
+- [x] 将 Linux 本地模型服务改为显式外部 OpenAI-compatible endpoint，或使用与 macOS 一致的 `llama-server` 可执行文件。
+- [x] 将 `serve` 命令与“启动 Slidex API”区分；当前 CLI 明确标注其启动的是 local model service。
 
 ## 1.6 清理仓库级 Docker 文件
 
-- [ ] 在代码不再引用后删除或停止分发 `deeppresenter/docker/`。
-- [ ] 删除或停止使用根目录 `docker-compose.yml`。
-- [ ] 删除或停止使用 `.dockerignore`。
-- [ ] 检查 `MANIFEST.in` 和 package data 不再包含 Docker 资源。
-- [ ] 全仓运行 `rg -n "docker|Docker|sandbox container"`，逐项确认剩余引用是否仅为历史文档。
+- [x] 在代码不再引用后删除或停止分发 `deeppresenter/docker/`。
+- [x] 删除或停止使用根目录 `docker-compose.yml`。
+- [x] 删除或停止使用 `.dockerignore`。
+- [x] 检查 `MANIFEST.in` 和 package data 不再包含 Docker 资源。
+- [x] 全仓运行 `rg -n "docker|Docker|sandbox container"`；剩余命中仅为 legacy `pptagent/docker/`、历史说明和 Chromium `--no-sandbox` 参数。
 
 ## 1.7 Docker-free 验证
 
-- [ ] 在没有 Docker CLI、没有 Docker daemon 的环境执行配置加载。
-- [ ] 启动 `AgentEnv` 并连接非 Docker MCP servers。
+- [x] 配置加载及 unit tests 不再探测 Docker CLI 或 daemon。
+- [x] 启动 `AgentEnv` 并验证 local/non-Docker tool server 注册。
 - [ ] 使用 local tools 生成一页 HTML。
 - [ ] 完成 HTML → PPTX → PDF/image 转换。
 - [ ] 运行 `pptagent generate` 兼容命令。
-- [ ] 确认测试和运行日志中不存在 Docker probe。
+- [x] 确认测试和运行日志中不存在 Docker probe。
 
 ### Phase 1 退出条件
 
-- [ ] `pyproject.toml` 和运行时代码不依赖 Docker SDK。
-- [ ] 默认 MCP 配置不执行 Docker。
+- [x] `pyproject.toml` 和运行时代码不依赖 Docker SDK。
+- [x] 默认 MCP 配置不执行 Docker。
 - [ ] 无 Docker 环境可完成至少一页生成、检查和导出。
-- [ ] 所有 agent 文件操作通过可记录的 local tools 完成。
+- [x] 所有 agent 文件操作通过可记录的 local tools 完成。
 
 ---
 
