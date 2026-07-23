@@ -283,6 +283,15 @@ class Agent:
                         assert "outcome" in arguments, (
                             "Finalize tool call must have an outcome"
                         )
+                        outcome_path = Path(arguments["outcome"])
+                        if outcome_path.is_absolute() and outcome_path.parts[:2] == (
+                            "/",
+                            "workspace",
+                        ):
+                            outcome_path = self.workspace.joinpath(
+                                *outcome_path.parts[2:]
+                            )
+                            arguments["outcome"] = str(outcome_path)
                         outcome = arguments["outcome"]
                     t.function.arguments = json.dumps(arguments, ensure_ascii=False)
                 except AssertionError as e:

@@ -16,7 +16,9 @@ class WorkspaceTools:
 
     def _resolve(self, path: str = ".") -> Path:
         candidate = Path(path).expanduser()
-        if not candidate.is_absolute():
+        if candidate.is_absolute() and candidate.parts[:2] == ("/", "workspace"):
+            candidate = self.workspace.joinpath(*candidate.parts[2:])
+        elif not candidate.is_absolute():
             candidate = self.workspace / candidate
         resolved = candidate.resolve()
         if not resolved.is_relative_to(self.workspace):

@@ -40,3 +40,8 @@ dist-ssr
 .superset
 !.vscode/extensions.json
 !.dockerignore
+
+# Local API credentials
+.env
+.env.*
+!.env.example

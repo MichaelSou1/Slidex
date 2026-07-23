@@ -96,14 +96,16 @@ Research -> Design           reset -> step -> reward
 
 # Phase 0：建立基线与改造护栏
 
-> 状态（2026-07-24）：核心测试门禁已建立；完整的三类 fixture 与 HTML/PDF/history 基线归档仍待补齐。
+> 状态（2026-07-24）：核心测试门禁和单页真实生成基线已建立；完整的三类 fixture 与 history 格式归档仍待补齐。
 
 ## 0.1 固定当前行为
 
-- [ ] 记录当前 `pptagent generate` 的最小可运行调用和输出目录结构。
+- [x] 记录当前 `pptagent generate` 的最小可运行调用和输出目录结构。
+  - 最小调用：`pptagent generate "<prompt>" --output output.pptx --pages 1 --aspect 16:9 --lang en`。
+  - workspace 包含输入请求、Markdown、HTML、PPTX、PDF、渲染图、`intermediate_output.json` 和 `.history/`。
 - [ ] 选取一个 3 页纯文本样例、一个含图片样例、一个故意 overflow 的 HTML 样例作为 smoke fixtures。
-- [ ] 记录当前 HTML、PDF、PPTX 输出及 `.history/` 文件格式。
-- [ ] 明确哪些集成测试需要 Playwright、Node、Poppler、LibreOffice 或模型凭证。
+- [x] 记录当前单页 HTML、PDF、PPTX 输出及 `.history/` 目录结构；完整 history schema 固化留待 Artifact Store 阶段。
+- [x] 明确集成依赖：strict/export 需要 Node，browser/PDF 需要 Playwright 与 Poppler，PPTX 重渲染需要 LibreOffice，真实 `generate` 需要 LLM/VLM 凭证。
 - [x] 将测试分成 `unit`、`browser`、`export`、`llm`、`api`、`rl` 六类。
 
 ## 0.2 建立基础测试门禁
@@ -112,10 +114,10 @@ Research -> Design           reset -> step -> reward
 - [x] 为 `InputRequest.copy_to_workspace()` 增加文件和目录测试。
 - [x] 为 `AgentEnv.register_tool()` 增加 sync/async local tool 测试。
 - [x] 为 `convert_html_to_pptx()` 增加 strict validation smoke test。
-- [ ] 为 Playwright HTML → image/PDF 增加 browser smoke test。
+- [x] 为 Playwright HTML → image/PDF 增加 browser smoke test。
 - [x] 保存基线测试结果，后续每个 phase 都运行最窄相关集合。
   - 基线命令：`PYTHONPATH=. .venv/bin/pytest -q -m "unit or browser or export" deeppresenter/test`
-  - 结果（2026-07-24）：`7 passed`；`ruff check` 通过。
+  - 结果（2026-07-24）：`8 passed`；`ruff check` 通过。
 
 ### Phase 0 退出条件
 
@@ -127,7 +129,7 @@ Research -> Design           reset -> step -> reward
 
 # Phase 1：彻底切断 Docker 依赖
 
-> 状态（2026-07-24）：DeepPresenter 主运行时已切断 Docker；端到端 PDF/inspection、兼容 `generate` 实跑仍待验证。legacy `pptagent/docker/` 不属于本阶段删除范围。
+> 状态（2026-07-24）：DeepPresenter 主运行时已切断 Docker；已使用 `.env` 配置的真实 LLM/VLM 完成单页 `pptagent generate`、strict inspection、PPTX 导出及最终重渲染。legacy `pptagent/docker/` 不属于本阶段删除范围。
 
 ## 1.1 删除 Python 运行时依赖
 
@@ -164,7 +166,7 @@ Research -> Design           reset -> step -> reward
 - [x] 从 `deeppresenter/mcp.json.example` 删除 `sandbox` Docker server 条目。
 - [x] 检查 onboarding 生成的 MCP 配置不会再次加入 sandbox。
 - [x] 保留 `any2markdown`、`task`、`deeppresenter`、`pptagent`、`tool_agents`、`search` 等 stdio MCP。
-- [ ] 将新 critic 尽量做成进程内 service；只有确有跨进程复用需求时才暴露 MCP wrapper。
+- [ ] 将新 critic 尽量做成进程内 service；只有确有跨进程复用需求时才暴露 MCP wrapper。（后续 critic phase 的架构约束，不阻塞 Phase 1 验收。）
 
 ## 1.5 清理 onboarding 和平台依赖
 
@@ -188,16 +190,18 @@ Research -> Design           reset -> step -> reward
 
 - [x] 配置加载及 unit tests 不再探测 Docker CLI 或 daemon。
 - [x] 启动 `AgentEnv` 并验证 local/non-Docker tool server 注册。
-- [ ] 使用 local tools 生成一页 HTML。
-- [ ] 完成 HTML → PPTX → PDF/image 转换。
-- [ ] 运行 `pptagent generate` 兼容命令。
+- [x] 使用 local tools 和真实 LLM 生成一页 HTML。
+- [x] 完成 HTML → PPTX，并分别完成 HTML 与最终 PPTX 的 PDF/image 渲染验证。
+- [x] 使用 `.env` 中的 LLM/VLM API 运行 `pptagent generate` 兼容命令。
 - [x] 确认测试和运行日志中不存在 Docker probe。
+  - 真实验证产物：1 页 16:9 PPTX（约 593 KB），LibreOffice 重渲染 PDF/JPG 成功，OOXML ZIP 完整性通过。
+  - strict inspection 首次发现 HTML 规则错误，Design Agent 修改后复检通过。
 
 ### Phase 1 退出条件
 
 - [x] `pyproject.toml` 和运行时代码不依赖 Docker SDK。
 - [x] 默认 MCP 配置不执行 Docker。
-- [ ] 无 Docker 环境可完成至少一页生成、检查和导出。
+- [x] 无 Docker 环境可完成至少一页生成、strict inspection、修复、导出和最终 PPTX 重渲染。
 - [x] 所有 agent 文件操作通过可记录的 local tools 完成。
 
 ---

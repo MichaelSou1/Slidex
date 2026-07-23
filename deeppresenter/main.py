@@ -67,17 +67,40 @@ class AgentLoop:
             json.dump(request.model_dump(), f, ensure_ascii=False, indent=2)
         async with AgentEnv(self.workspace, self.config) as agent_env:
             WorkspaceTools(self.workspace).register(agent_env)
+
+            def thinking(thought: str) -> str:
+                """Record an explicit reasoning checkpoint before the next action."""
+                return thought
+
+            agent_env.register_tool(thinking)
+            agent_env.register_tool(
+                SubAgent.delegate(self.config, agent_env, self.workspace, self.language)
+            )
+            if "deeppresenter" in agent_env._server_tools:
+                agent_env._server_tools["deeppresenter"] = [
+                    tool
+                    for tool in agent_env._server_tools["deeppresenter"]
+                    if tool != "inspect_slide"
+                ]
+                agent_env._tool_to_server.pop("inspect_slide", None)
+                agent_env._tools_dict.pop("inspect_slide", None)
+
+            async def inspect_slide(
+                html_file: str,
+                aspect_ratio: Literal["16:9", "4:3", "A1", "A2", "A3", "A4"] = "16:9",
+            ) -> str:
+                """Strictly validate a workspace HTML slide before export."""
+                html_path = WorkspaceTools(self.workspace)._resolve(html_file)
+                await convert_html_to_pptx(html_path, aspect_ratio=aspect_ratio)
+                return "This slide is valid."
+
+            agent_env.register_tool(inspect_slide)
             hello_message = f"DeepPresenter running in {self.workspace}, with {len(request.attachments)} attachments, prompt={request.instruction}"
             modes = []
             if self.config.offline_mode:
                 modes.append("Offline Mode")
             self.agent_env = agent_env
             if self.config.multiagent_mode:
-                self.agent_env.register_tool(
-                    SubAgent.delegate(
-                        self.config, agent_env, self.workspace, self.language
-                    )
-                )
                 modes.append("Multiagent Mode")
             if modes:
                 hello_message += f" [{', '.join(modes)}]"

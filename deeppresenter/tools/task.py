@@ -55,7 +55,7 @@ def _rewrite_image_link(match: re.Match[str], md_dir: Path) -> str:
     return f"![{updated_alt}]({new_path}{rest})"
 
 
-@mcp.tool(exclude_args=["agent_name"])
+@mcp.tool()
 def finalize(outcome: str, agent_name: str = "") -> str:
     """
     When all tasks are finished, call this function to finalize the loop.

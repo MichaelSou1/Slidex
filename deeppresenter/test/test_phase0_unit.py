@@ -6,6 +6,7 @@ from openai.types.chat.chat_completion_message_function_tool_call import (
     ChatCompletionMessageFunctionToolCall as ToolCall,
 )
 
+from deeppresenter.agents.agent import Agent
 from deeppresenter.agents.env import AgentEnv
 from deeppresenter.tools.filesystem import WorkspaceTools
 from deeppresenter.utils.config import DeepPresenterConfig
@@ -104,13 +105,54 @@ async def test_agent_env_connects_local_servers_only(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalize_accepts_workspace_alias(tmp_path: Path) -> None:
+    env = AgentEnv(tmp_path / "workspace", _write_config(tmp_path))
+    env.workspace.mkdir(parents=True)
+
+    def finalize(outcome: str, agent_name: str = "") -> str:
+        """Finalize an agent artifact."""
+        assert agent_name == "Research"
+        assert Path(outcome).exists()
+        return outcome
+
+    env.register_tool(finalize)
+    agent = object.__new__(Agent)
+    agent.name = "Research"
+    agent.workspace = env.workspace
+    agent.agent_env = env
+    agent.chat_history = []
+    agent.error_history = []
+    artifact = env.workspace / "result.md"
+    artifact.write_text("result", encoding="utf-8")
+    outcome = await agent.execute(
+        [
+            ToolCall(
+                id="finalize",
+                type="function",
+                function={
+                    "name": "finalize",
+                    "arguments": '{"outcome": "/workspace/result.md"}',
+                },
+            )
+        ]
+    )
+    assert outcome == str(artifact)
+
+
+@pytest.mark.unit
 def test_workspace_tools_are_scoped_and_record_command_output(tmp_path: Path) -> None:
     tools = WorkspaceTools(tmp_path / "workspace")
     tools.write_file("nested/a.txt", "before")
     tools.edit_file("nested/a.txt", "before", "after")
 
     assert tools.read_file("nested/a.txt") == "after"
-    assert json.loads(tools.list_files(pattern="**/*.txt")) == ["nested/a.txt"]
+    tools.write_file("/workspace/legacy.txt", "mapped")
+    assert tools.read_file("legacy.txt") == "mapped"
+    assert json.loads(tools.list_files(pattern="**/*.txt")) == [
+        "legacy.txt",
+        "nested/a.txt",
+    ]
     result = json.loads(tools.run_command("printf command-ok"))
     assert result == {"exit_code": 0, "stdout": "command-ok", "stderr": ""}
     with pytest.raises(ValueError, match="escapes workspace"):
