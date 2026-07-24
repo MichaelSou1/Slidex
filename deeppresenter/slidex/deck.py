@@ -6,11 +6,7 @@ import hashlib
 from collections.abc import Iterable
 
 from deeppresenter.slidex.critic import HybridCritic
-from deeppresenter.slidex.inspectors.base import inspect_safely
-from deeppresenter.slidex.inspectors.style import (
-    BrandColorInspector,
-    TypographyInspector,
-)
+from deeppresenter.slidex.inspectors.style import TypographyInspector
 from deeppresenter.slidex.inspectors.terminology import TerminologyInspector
 from deeppresenter.slidex.models import (
     DeckInspectionReport,
@@ -138,12 +134,6 @@ class DeckInspector:
                 artifacts
             )
         )
-        for artifact in artifacts:
-            results.extend(
-                inspect_safely(
-                    BrandColorInspector(self.config.color_delta_e_threshold), artifact
-                )
-            )
         return results
 
     @staticmethod

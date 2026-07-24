@@ -1,5 +1,5 @@
 import pytest
-from test.conftest import test_config
+from pptagent.test.conftest import test_config
 
 from pptagent.document import Document
 

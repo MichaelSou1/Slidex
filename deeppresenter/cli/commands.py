@@ -92,8 +92,9 @@ def onboard():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_dir = CONFIG_DIR / f"backup_{timestamp}"
         backup_dir.mkdir(exist_ok=True)
-        shutil.copy(CONFIG_FILE, backup_dir / "config.yaml")
-        shutil.copy(MCP_FILE, backup_dir / "mcp.json")
+        shutil.copy2(CONFIG_FILE, backup_dir / "config.yaml")
+        if MCP_FILE.exists():
+            shutil.copy2(MCP_FILE, backup_dir / "mcp.json")
         console.print(f"[green]✓[/green] Backed up to {backup_dir}")
 
     console.print(
@@ -104,10 +105,18 @@ def onboard():
         )
     )
 
-    check_playwright_browsers()
-    check_npm_dependencies()
-    if not check_poppler():
-        sys.exit(1)
+    dependency_checks = {
+        "Playwright Chromium": check_playwright_browsers(),
+        "html2pptx Node.js dependencies": check_npm_dependencies(),
+        "Poppler": check_poppler(),
+    }
+    missing = [name for name, ready in dependency_checks.items() if not ready]
+    if missing:
+        console.print(
+            "[bold red]✗[/bold red] Onboarding failed; unavailable dependencies: "
+            + ", ".join(missing)
+        )
+        raise typer.Exit(code=1)
 
     local_config = Path.cwd() / "deeppresenter" / "config.yaml"
     local_mcp = Path.cwd() / "deeppresenter" / "mcp.json"
@@ -256,53 +265,40 @@ def onboard():
             else:
                 raise ValueError("any2markdown server not found in mcp.json")
 
-    with open(CONFIG_FILE, "w") as f:
-        yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True)
-
-    with open(MCP_FILE, "w") as f:
+    pending_config = CONFIG_DIR / ".config.yaml.pending"
+    pending_mcp = CONFIG_DIR / ".mcp.json.pending"
+    with open(pending_config, "w") as f:
+        yaml.safe_dump(config_data, f, default_flow_style=False, allow_unicode=True)
+    with open(pending_mcp, "w") as f:
         json.dump(mcp_data, f, indent=2, ensure_ascii=False)
-
-    console.print(f"\n[bold green]✓[/bold green] Configuration saved to {CONFIG_DIR}")
 
     console.print("\n[bold cyan]Validating LLM configurations...[/bold cyan]")
     try:
-        config = DeepPresenterConfig.load_from_file(str(CONFIG_FILE))
+        config = DeepPresenterConfig.load_from_file(str(pending_config))
         if uses_local_model(config):
             pid = setup_inference()
             if local_model_pid is None:
                 local_model_pid = pid
         asyncio.run(config.validate_llms())
+        pending_config.replace(CONFIG_FILE)
+        pending_mcp.replace(MCP_FILE)
         console.print("[bold green]✓[/bold green] All LLMs validated successfully!")
+        console.print(
+            f"[bold green]✓[/bold green] Configuration saved to {CONFIG_DIR}"
+        )
     except Exception as e:
+        pending_config.unlink(missing_ok=True)
+        pending_mcp.unlink(missing_ok=True)
         console.print(f"[bold red]✗[/bold red] Validation failed: {e}")
         console.print(f"[dim]{type(e).__name__}: {e!r}[/dim]")
-        console.print("Please check your configuration and try again.")
-        sys.exit(1)
+        console.print("Existing configuration was not changed.")
+        raise typer.Exit(code=1) from e
     finally:
         if local_model_pid is not None:
             try:
                 os.kill(local_model_pid, signal.SIGTERM)
             except OSError:
                 pass
-
-    package_config = PACKAGE_DIR / "config.yaml"
-    package_mcp = PACKAGE_DIR / "mcp.json"
-    saved_local_files: list[Path] = []
-
-    if not package_config.exists():
-        with open(package_config, "w") as f:
-            yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True)
-        saved_local_files.append(package_config)
-
-    if not package_mcp.exists():
-        with open(package_mcp, "w") as f:
-            json.dump(mcp_data, f, indent=2, ensure_ascii=False)
-        saved_local_files.append(package_mcp)
-
-    if saved_local_files:
-        console.print("\n[bold green]✓[/bold green] Saved local configuration files:")
-        for path in saved_local_files:
-            console.print(f"  • {path}")
 
 
 def generate(
@@ -336,19 +332,29 @@ def generate(
     ensure_supported_platform()
     if language not in {"en", "zh"}:
         console.print("[bold red]Error:[/bold red] Language must be 'en' or 'zh'")
-        sys.exit(1)
+        raise typer.Exit(code=2)
+    supported_aspects = {"16:9", "4:3", "A1", "A2", "A3", "A4"}
+    if aspect_ratio not in supported_aspects:
+        console.print(
+            "[bold red]Error:[/bold red] Aspect ratio must be one of: "
+            + ", ".join(sorted(supported_aspects))
+        )
+        raise typer.Exit(code=2)
+    if output.suffix.lower() != ".pptx":
+        console.print("[bold red]Error:[/bold red] Output path must end with .pptx")
+        raise typer.Exit(code=2)
     if not is_onboarded():
         console.print(
             "[bold red]Error:[/bold red] Please run 'deeppresenter onboard' (or 'pptagent onboard') first"
         )
-        sys.exit(1)
+        raise typer.Exit(code=1)
 
     attachments = []
     if files:
         for f in files:
             if not f.exists():
                 console.print(f"[bold red]Error:[/bold red] File not found: {f}")
-                sys.exit(1)
+                raise typer.Exit(code=2)
             attachments.append(str(f.resolve()))
 
     request = InputRequest(
@@ -405,9 +411,17 @@ def generate(
                     )
                 elif isinstance(msg, (str, Path)):
                     generated_file = Path(msg)
+                    if not generated_file.is_file():
+                        raise RuntimeError(
+                            f"Agent returned a missing output file: {generated_file}"
+                        )
+                    if generated_file.suffix.lower() != ".pptx":
+                        raise RuntimeError(
+                            f"Agent returned a non-PPTX output: {generated_file}"
+                        )
                     output_path = Path(output).resolve()
                     output_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy(generated_file, output_path)
+                    shutil.copy2(generated_file, output_path)
                     console.print(
                         f"\n[bold green]✓[/bold green] Generated: {generated_file}"
                     )
@@ -415,6 +429,7 @@ def generate(
                         f"[bold green]✓[/bold green] Copied to: {output_path}"
                     )
                     return str(output_path)
+            raise RuntimeError("Generation completed without producing a PPTX file")
         except Exception as e:
             console.print(f"[bold red]✗[/bold red] Generation failed: {e}")
             raise

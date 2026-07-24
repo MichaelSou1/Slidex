@@ -1,6 +1,6 @@
 from os.path import join
 
-from test.conftest import test_config
+from pptagent.test.conftest import test_config
 
 from pptagent.multimodal import ImageLabler
 from pptagent.presentation import Presentation

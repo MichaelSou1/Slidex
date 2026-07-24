@@ -82,6 +82,16 @@ class OverlapInspector:
                 )
             ]
         failures: list[InspectionResult] = []
+        parent_by_id = {element.element_id: element.parent_id for element in elements}
+
+        def is_ancestor(ancestor_id: str, descendant_id: str) -> bool:
+            parent_id = parent_by_id.get(descendant_id)
+            while parent_id is not None:
+                if parent_id == ancestor_id:
+                    return True
+                parent_id = parent_by_id.get(parent_id)
+            return False
+
         for left, right in combinations(
             [
                 e
@@ -91,8 +101,8 @@ class OverlapInspector:
             2,
         ):
             if (
-                left.parent_id == right.element_id
-                or right.parent_id == left.element_id
+                is_ancestor(left.element_id, right.element_id)
+                or is_ancestor(right.element_id, left.element_id)
                 or (
                     left.parent_id
                     and left.parent_id == right.parent_id
@@ -199,7 +209,11 @@ class AlignmentInspector:
                     for item in peers
                     if abs(getter(item.bbox) - median) <= self.tolerance_px
                 ]
-                if len(inliers) < self.minimum_peers - 1:
+                # Alignment is evidence of one outlier against an otherwise coherent
+                # sibling group. Two coincident elements inside a heterogeneous layout
+                # are not enough to classify every other element as defective.
+                required_inliers = max(self.minimum_peers - 1, len(peers) - 1)
+                if len(inliers) < required_inliers:
                     continue
                 for item in peers:
                     offset = getter(item.bbox) - median
@@ -405,7 +419,9 @@ class DeclaredOverflowInspector:
 class RenderOverflowInspector:
     """G7 computed overflow; unexplained pixel anomalies remain neural work."""
 
-    tolerance_px: float = 1
+    # Chromium commonly rounds font line boxes by up to four CSS pixels. Treat
+    # that rasterization noise as normal while preserving substantive overflow.
+    tolerance_px: float = 4
     name: str = "geometry.render_overflow"
     version: str = "1.0"
     defect_class: DefectClass = DefectClass.G7

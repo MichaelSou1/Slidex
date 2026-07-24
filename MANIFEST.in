@@ -1,4 +1,4 @@
-include README.md
+include pptagent/README.md
 include LICENSE
 include pyproject.toml
 
@@ -9,5 +9,6 @@ recursive-include pptagent/templates *.txt *.json *.pptx
 
 recursive-include deeppresenter/roles *.yaml
 recursive-include deeppresenter/html2pptx *.js *.json
+prune deeppresenter/html2pptx/node_modules
 include deeppresenter/config.yaml.example
 include deeppresenter/mcp.json.example

@@ -123,6 +123,35 @@ def test_overlap_clean_and_defective_pair() -> None:
 
 
 @pytest.mark.unit
+def test_overlap_ignores_all_ancestor_descendant_pairs() -> None:
+    grandchild = _element(
+        "text", 50, 50, 40, 20, parent_id="inner"
+    )
+    inner = _element(
+        "inner", 40, 40, 80, 60, parent_id="card", children=[grandchild]
+    )
+    card = _element("card", 30, 30, 120, 100, children=[inner])
+
+    assert OverlapInspector().inspect(_artifact([card]))[0].status == InspectionStatus.PASS
+
+
+@pytest.mark.unit
+def test_alignment_rejects_two_point_coincidence_in_heterogeneous_group() -> None:
+    elements = [
+        _element("a", 40, 20, 100, 30),
+        _element("b", 40, 80, 100, 30),
+        _element("c", 200, 140, 100, 30),
+        _element("d", 360, 200, 100, 30),
+        _element("e", 520, 260, 100, 30),
+    ]
+
+    assert (
+        AlignmentInspector(tolerance_px=2).inspect(_artifact(elements))[0].status
+        != InspectionStatus.FAIL
+    )
+
+
+@pytest.mark.unit
 def test_alignment_needs_sibling_evidence_and_locates_outlier() -> None:
     inspector = AlignmentInspector(tolerance_px=2)
     insufficient = _artifact(
@@ -146,6 +175,11 @@ def test_margin_and_render_overflow_boundaries() -> None:
     defective = _artifact([_element("a", 23, 24, 100, 100)])
     assert margin.inspect(clean)[0].status == InspectionStatus.PASS
     assert margin.inspect(defective)[0].status == InspectionStatus.FAIL
+    rounding_noise = _element("rounded", 40, 40, 100, 30, scroll_height=34)
+    assert (
+        RenderOverflowInspector().inspect(_artifact([rounding_noise]))[0].status
+        == InspectionStatus.PASS
+    )
     overflowing = _element("text", 40, 40, 100, 30, scroll_width=120)
     result = RenderOverflowInspector().inspect(_artifact([overflowing]))[0]
     assert (

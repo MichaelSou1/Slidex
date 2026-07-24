@@ -350,6 +350,22 @@ class LLM(BaseModel):
             raise ValueError("retry_times must be at least one")
         if isinstance(messages, str):
             messages = [{"role": "user", "content": messages}]
+        normalized_messages: list[dict[str, Any]] = []
+        allowed_fields = {"role", "content", "name", "tool_call_id", "tool_calls"}
+        for message in messages:
+            if isinstance(message, BaseModel):
+                payload = message.model_dump(mode="json", exclude_none=True)
+            elif isinstance(message, dict):
+                payload = dict(message)
+            else:
+                raise TypeError(
+                    "Chat messages must be dictionaries or Pydantic models, "
+                    f"got {type(message).__name__}"
+                )
+            normalized_messages.append(
+                {key: value for key, value in payload.items() if key in allowed_fields}
+            )
+        messages = normalized_messages
 
         errors: list[str] = []
         iter_endpoints = cycle(self._endpoints)

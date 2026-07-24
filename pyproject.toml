@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "pptagent"
 authors = [{ name = "Hao Zheng", email = "wszh712811@gmail.com" }]
 description = "An Agentic Framework for Reflective PowerPoint Generation"
-readme = "README.md"
+readme = "pptagent/README.md"
 requires-python = ">=3.11"
 license = "MIT"
 dynamic = ["version"]
@@ -107,6 +107,7 @@ full = [
 "Bug Tracker" = "https://github.com/icip-cas/PPTAgent/issues"
 
 [project.scripts]
+deeppresenter = "deeppresenter.cli:main"
 pptagent = "deeppresenter.cli:main"
 pptagent-mcp = "pptagent.mcp_server:main"
 

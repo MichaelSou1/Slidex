@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import tempfile
 import time
 from dataclasses import dataclass
@@ -58,14 +59,6 @@ _REQUIRED_PACKAGES = ("fast-glob", "minimist", "pptxgenjs", "playwright", "sharp
 _CACHE_NODE_MODULES = Path.home() / ".cache/deeppresenter/html2pptx/node_modules"
 SCRIPT_PATH = PACKAGE_DIR / "html2pptx" / "html2pptx_cli.js"
 LOCAL_NM = SCRIPT_PATH.parent / "node_modules"
-
-if not all((LOCAL_NM / pkg).exists() for pkg in _REQUIRED_PACKAGES):
-    if all((_CACHE_NODE_MODULES / pkg).exists() for pkg in _REQUIRED_PACKAGES):
-        if LOCAL_NM.is_symlink():
-            LOCAL_NM.unlink()
-        LOCAL_NM.symlink_to(_CACHE_NODE_MODULES)
-        print(f"Symlinked node_modules: {_CACHE_NODE_MODULES} -> {LOCAL_NM}")
-
 
 class PlaywrightConverter:
     _playwright: Playwright | None = None
@@ -250,10 +243,31 @@ async def convert_html_to_pptx(
     if soft_parsing:
         cmd.append("--soft")
 
+    node_modules = (
+        LOCAL_NM
+        if all((LOCAL_NM / package).exists() for package in _REQUIRED_PACKAGES)
+        else _CACHE_NODE_MODULES
+    )
+    missing_packages = [
+        package for package in _REQUIRED_PACKAGES if not (node_modules / package).exists()
+    ]
+    if missing_packages:
+        raise RuntimeError(
+            "html2pptx Node.js dependencies are missing: "
+            + ", ".join(missing_packages)
+            + ". Run `deeppresenter onboard` first."
+        )
+    process_env = os.environ.copy()
+    existing_node_path = process_env.get("NODE_PATH")
+    process_env["NODE_PATH"] = os.pathsep.join(
+        filter(None, (str(node_modules), existing_node_path))
+    )
+
     started = time.perf_counter()
     process = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(SCRIPT_PATH.parent),
+        env=process_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

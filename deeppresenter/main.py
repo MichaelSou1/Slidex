@@ -112,6 +112,7 @@ class AgentLoop:
             inspection_reports = {}
             inspection_rounds: dict[str, int] = {}
             pending_repairs: dict[str, list[RepairAction]] = {}
+            repair_proposals: dict[str, RepairAction] = {}
             latest_artifact_ids: dict[str, str] = {}
             latest_source_hashes: dict[str, str] = {}
 
@@ -123,7 +124,7 @@ class AgentLoop:
                 html_path = WorkspaceTools(self.workspace)._resolve(html_file)
                 key = str(html_path)
                 rounds = inspection_rounds.get(key, 0)
-                if rounds > self.config.slidex.max_repair_rounds:
+                if rounds >= self.config.slidex.max_repair_rounds + 1:
                     prior = inspection_reports.get(key)
                     if prior is None:
                         raise RuntimeError(
@@ -135,7 +136,8 @@ class AgentLoop:
                     return json.dumps(
                         payload, ensure_ascii=False, indent=2, default=str
                     )
-                inspection_rounds[key] = rounds + 1
+                # Syntax/conversion failures are preflight errors, not quality repair
+                # rounds. Charge the budget only after a report can be produced.
                 await convert_html_to_pptx(html_path, aspect_ratio=aspect_ratio)
                 observation_dir = (
                     self.workspace / ".history" / "observations" / html_path.stem
@@ -308,11 +310,39 @@ class AgentLoop:
                     )
                 inspected_artifacts[html_path.stem] = persisted_artifact
                 inspection_reports[key] = report
-                payload = report.model_dump()
-                payload["repair_actions"] = [
-                    action.model_dump() for action in actions_from_report(report)
+                inspection_rounds[key] = rounds + 1
+                failed_results = [
+                    finding
+                    for finding in report.results
+                    if finding.status.value in {"fail", "error"}
                 ]
-                payload["summary"]["repair_rounds"] = rounds
+                proposed_actions = actions_from_report(report)
+                repair_proposals.update(
+                    {action.action_id: action for action in proposed_actions}
+                )
+                payload = {
+                    "artifact_id": report.artifact_id,
+                    "slide_id": report.slide_id,
+                    "summary": dict(report.summary),
+                    "findings": [
+                        {
+                            "defect_class": finding.defect_class.value,
+                            "status": finding.status.value,
+                            "severity": finding.severity,
+                            "element_ids": finding.element_ids,
+                            "evidence": [item.detail for item in finding.evidence],
+                            "repair_hint": finding.repair_hint.model_dump()
+                            if hasattr(finding.repair_hint, "model_dump")
+                            else finding.repair_hint,
+                        }
+                        for finding in failed_results
+                    ],
+                    "repair_actions": [
+                        action.model_dump() for action in proposed_actions
+                    ],
+                    "report_uri": report.report_uri,
+                }
+                payload["summary"]["repair_rounds"] = rounds + 1
                 payload["summary"]["repair_rounds_remaining"] = max(
                     0, self.config.slidex.max_repair_rounds - rounds
                 )
@@ -320,11 +350,19 @@ class AgentLoop:
                 return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
 
             def apply_repair(html_file: str, action: dict) -> str:
-                """Apply one explicit low-risk RepairAction; re-run inspect_slide next."""
+                """Apply one proposed low-risk RepairAction; re-run inspect_slide next."""
                 html_path = WorkspaceTools(self.workspace)._resolve(html_file)
-                repair = RepairAction.model_validate(action)
                 current = inspected_artifacts.get(html_path.stem)
-                if current is None or repair.before_artifact_id != current.artifact_id:
+                report = inspection_reports.get(str(html_path))
+                if current is None or report is None:
+                    raise ValueError("inspect the slide before applying a repair")
+
+                action_id = action.get("action_id")
+                proposal = repair_proposals.get(action_id)
+                payload = proposal.model_dump() if proposal is not None else {}
+                payload.update(action)
+                repair = RepairAction.model_validate(payload)
+                if repair.before_artifact_id != current.artifact_id:
                     raise ValueError(
                         "repair action does not target the latest inspected artifact"
                     )
@@ -375,6 +413,7 @@ class AgentLoop:
                     agent_env,
                     self.workspace,
                     self.language,
+                    max_turns=self.config.slidex.max_episode_steps,
                 )
                 self.agent = self.planner
                 self.planner_gen = self.planner.loop(request)
@@ -399,6 +438,7 @@ class AgentLoop:
                 agent_env,
                 self.workspace,
                 self.language,
+                max_turns=self.config.slidex.max_episode_steps,
             )
             self.agent = self.research_agent
             try:
@@ -429,6 +469,7 @@ class AgentLoop:
                     agent_env,
                     self.workspace,
                     self.language,
+                    max_turns=self.config.slidex.max_episode_steps,
                 )
                 self.agent = self.pptagent
                 try:
@@ -457,6 +498,7 @@ class AgentLoop:
                     agent_env,
                     self.workspace,
                     self.language,
+                    max_turns=self.config.slidex.max_episode_steps,
                 )
                 self.agent = self.designagent
                 try:

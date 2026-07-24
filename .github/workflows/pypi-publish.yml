@@ -5,7 +5,11 @@ on:
     tags: [ 'v*.*.*' ]
 
 jobs:
+  quality:
+    uses: ./.github/workflows/quality.yml
+
   publish:
+    needs: quality
     runs-on: ubuntu-latest
     permissions:
       contents: read

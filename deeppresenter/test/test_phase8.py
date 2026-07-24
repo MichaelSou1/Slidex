@@ -8,6 +8,8 @@ from deeppresenter.slidex.export import (
     FinalExportService,
     LibreOfficeRenderer,
     RenderFidelityValidator,
+    extract_html_text,
+    extract_pptx_structure,
 )
 from deeppresenter.slidex.models import (
     DefectClass,
@@ -65,6 +67,34 @@ def test_page_count_and_text_are_independent_hard_fidelity_signals(
     assert report.export_fidelity_failure
     assert not report.page_count_matches
     assert report.page_results[0].missing_text == ["required"]
+
+
+@pytest.mark.unit
+def test_html_text_excludes_head_metadata(tmp_path: Path) -> None:
+    html = tmp_path / "slide.html"
+    html.write_text(
+        "<html><head><title>Duplicate title</title></head>"
+        "<body><h1>Visible title</h1></body></html>",
+        encoding="utf-8",
+    )
+    assert extract_html_text(html) == ["Visible title"]
+
+
+@pytest.mark.unit
+def test_fidelity_allows_tokenization_and_requested_fonts(tmp_path: Path) -> None:
+    html = _image(tmp_path / "html.png")
+    pptx = _image(tmp_path / "pptx.png")
+    report = RenderFidelityValidator().validate(
+        [html],
+        [pptx],
+        ["slide_01"],
+        RendererInfo(name="test", version="1"),
+        source_text=[["检索增强生成（RAG）：三步工作流程"]],
+        pptx_text=[["检索增强生成", "（RAG）", "：三步工作流程"]],
+        font_substitutions=[["PingFang SC"]],
+    )
+    assert report.page_results[0].passed
+    assert report.page_results[0].text_presence == 1
 
 
 @pytest.mark.unit

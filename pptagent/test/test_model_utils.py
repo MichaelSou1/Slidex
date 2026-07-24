@@ -2,7 +2,7 @@ import tempfile
 from os.path import exists, join
 
 import pytest
-from test.conftest import test_config
+from pptagent.test.conftest import test_config
 
 from pptagent.model_utils import parse_pdf
 

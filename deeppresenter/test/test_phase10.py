@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from deeppresenter.slidex.models import PolicyCallRecord, TrajectoryStep
 from deeppresenter.utils.config import LLM, ModelCapabilityError
+from deeppresenter.utils.typings import ChatMessage, Role
 
 
 class StructuredAnswer(BaseModel):
@@ -120,6 +121,26 @@ async def test_text_multimodal_and_structured_payloads() -> None:
         assert json.loads(parsed.choices[0].message.content) == {"answer": "seen"}
         assert server.requests[1]["messages"][0]["content"][1]["type"] == "image_url"
         assert server.requests[1]["response_format"]["type"] == "json_schema"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pydantic_agent_messages_are_normalized_for_provider() -> None:
+    with FakeServer() as server:
+        server.reply({"role": "assistant", "content": "ok"})
+        client = model(server)
+        messages = [
+            ChatMessage(role=Role.SYSTEM, content="system prompt"),
+            ChatMessage(role=Role.USER, content="user prompt"),
+        ]
+
+        response = await client.run(messages, retry_times=1)
+
+        assert response.choices[0].message.content == "ok"
+        sent = server.requests[0]["messages"]
+        assert [message["role"] for message in sent] == ["system", "user"]
+        assert sent[0]["content"] == [{"type": "text", "text": "system prompt"}]
+        assert set(sent[0]) == {"role", "content"}
 
 
 @pytest.mark.unit

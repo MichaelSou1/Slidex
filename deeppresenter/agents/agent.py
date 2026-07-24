@@ -212,11 +212,11 @@ class Agent:
                 raise RuntimeError(
                     f"{self.name} exceeded max turns: {self.turn_count - 1}/{self.max_turns}"
                 )
-            if self.max_turns - self.turn_count < 2:
+            if self.max_turns - self.turn_count < 2 and self.chat_history:
                 self.chat_history[-1].content.append(
                     {
                         "type": "text",
-                        "text": f"You have only {self.max_turns - self.turn_count} turn left. Finish the remaing work soonly and call `finalize` immediately.",
+                        "text": f"You have only {self.max_turns - self.turn_count} turn left. Finish the remaining work and call `finalize` immediately.",
                     }
                 )
 

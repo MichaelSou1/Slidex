@@ -2,7 +2,7 @@ from os.path import join as pjoin
 from pathlib import Path
 
 import pytest
-from test.conftest import test_config
+from pptagent.test.conftest import test_config
 
 from pptagent.induct import SlideInducter
 from pptagent.multimodal import ImageLabler

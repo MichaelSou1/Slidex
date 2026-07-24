@@ -25,9 +25,19 @@ class WorkspaceTools:
             raise ValueError(f"Path escapes workspace: {path}")
         return resolved
 
-    def read_file(self, path: str) -> str:
-        """Read a UTF-8 text file inside the workspace."""
-        return self._resolve(path).read_text(encoding="utf-8")
+    def read_file(
+        self, path: str, offset: int = 0, limit: int | None = None
+    ) -> str:
+        """Read UTF-8 text, optionally selecting a zero-based line range."""
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be positive")
+        lines = self._resolve(path).read_text(encoding="utf-8").splitlines(
+            keepends=True
+        )
+        selected = lines[offset:] if limit is None else lines[offset : offset + limit]
+        return "".join(selected)
 
     def write_file(self, path: str, content: str) -> str:
         """Write a UTF-8 text file inside the workspace, creating parent directories."""
@@ -36,13 +46,28 @@ class WorkspaceTools:
         target.write_text(content, encoding="utf-8")
         return str(target)
 
-    def edit_file(self, path: str, old: str, new: str) -> str:
-        """Replace one unique text occurrence in a workspace file."""
-        target = self._resolve(path)
+    def edit_file(
+        self,
+        path: str | None = None,
+        old: str | None = None,
+        new: str | None = None,
+        html_file: str | None = None,
+    ) -> str:
+        """Replace one unique occurrence; ``html_file`` aliases ``path``."""
+        target_path = path or html_file
+        if target_path is None:
+            raise ValueError("path or html_file is required")
+        if path is not None and html_file is not None and path != html_file:
+            raise ValueError("path and html_file refer to different files")
+        if old is None or new is None:
+            raise ValueError("old and new are required")
+        target = self._resolve(target_path)
         content = target.read_text(encoding="utf-8")
         matches = content.count(old)
         if matches != 1:
-            raise ValueError(f"Expected exactly one match in {path}, found {matches}")
+            raise ValueError(
+                f"Expected exactly one match in {target_path}, found {matches}"
+            )
         target.write_text(content.replace(old, new, 1), encoding="utf-8")
         return str(target)
 

@@ -1,6 +1,6 @@
 from bs4 import BeautifulSoup
 from pptagent_pptx import Presentation
-from test.conftest import test_config
+from pptagent.test.conftest import test_config
 
 from pptagent.apis import (
     API_TYPES,
