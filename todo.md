@@ -8,9 +8,9 @@
 
 1. **彻底切断 Docker 运行时依赖**，允许直接侵入源码、检查中间状态并在本机运行工具。
 2. **落地 `slide-examiner.pdf` 的核心方法**：可信原生 IR、失败归因、确定性 symbolic linter、原子化神经检查、reference-assisted comparison，以及可定位、可修复、可评分的 hybrid critic。
-3. **提供 OpenAI-compatible API**，既能作为 OpenAI SDK 可调用的 agent 服务，也能为后续 agentic RL 暴露稳定、可回放的 episode/step/reward 接口。
+3. **接入 OpenAI-compatible 模型 API**，让 generation policy、critic 和未来 agentic RL policy 都能通过 `base_url`、`model`、`api_key` 调用外部兼容服务；Slidex 本身不对外实现 OpenAI API server。
 
-本文中的复选框是工程执行清单。每个阶段必须满足退出条件后再进入下一阶段，避免同时重构生成、评估、API 和训练接口而失去可验证基线。
+本文中的复选框是工程执行清单。每个阶段必须满足退出条件后再进入下一阶段，避免同时重构生成、评估、模型客户端和训练接口而失去可验证基线。
 
 ---
 
@@ -37,7 +37,7 @@
 
 ### 1.3 工程原则
 
-- [ ] CLI、HTTP API 和 RL environment 调用同一 application service，禁止复制三套业务流程。
+- [ ] CLI、生成流程和 RL environment 复用同一领域服务，禁止复制多套业务流程。
 - [ ] 每个 artifact、critic 配置、router 配置和 reward 配置都必须可版本化、可哈希、可回放。
 - [ ] 默认 strict validation；忽略错误的 soft mode 只能显式开启，并写入 trajectory。
 - [ ] 所有新函数和方法添加类型标注；技术注释和 docstring 使用英文。
@@ -48,9 +48,11 @@
 ## 2. 目标架构
 
 ```text
-OpenAI-compatible API / Native RL API / CLI
-                     |
-              Application Service
+CLI / Python RL Environment
+             |
+      Application Service
+             |
+ OpenAI-compatible model clients
                      |
        +-------------+-------------+
        |                           |
@@ -88,7 +90,6 @@ Research -> Design           reset -> step -> reward
 - [ ] 新建 `deeppresenter/slidex/reward.py`：reward vector、hard gates 和 aggregation。
 - [ ] 新建 `deeppresenter/slidex/environment.py`：RL reset/step/observe/terminate。
 - [ ] 新建 `deeppresenter/slidex/inspectors/`：geometry、style、terminology、render、neural、reference inspector。
-- [ ] 新建 `deeppresenter/api/`：FastAPI app、OpenAI compatibility 和 native episode routes。
 - [ ] 新建 `deeppresenter/tools/filesystem.py`：替代 Docker sandbox 的本地工作区工具。
 - [ ] 保持 `deeppresenter/main.py` 为 generation workflow facade，逐步将底层能力下沉到 application service。
 
@@ -123,7 +124,7 @@ Research -> Design           reset -> step -> reward
 
 - [x] 无模型凭证时可运行 unit tests。
 - [x] 有浏览器依赖时可运行单页 HTML render smoke test。
-- [x] 已有最小输入可以验证后续 Docker 移除、critic 和 API 改造没有破坏主链路。
+- [x] 已有最小输入可以验证后续 Docker 移除、critic 和模型客户端改造没有破坏主链路。
 
 ---
 
@@ -243,7 +244,7 @@ Research -> Design           reset -> step -> reward
 - [x] 保存 `manifest.json`：父 artifact、创建 action、模型、sampling 参数、工具调用和版本。
 - [x] 对 HTML、CSS、图片、IR JSON、PNG、PDF、PPTX 分别计算 SHA-256。
 - [x] 记录 renderer 名称和版本，如 Chromium、html2pptx、LibreOffice。
-- [x] artifact 写入采用临时目录 + atomic rename，避免 API 并发读到半成品。
+- [x] artifact 写入采用临时目录 + atomic rename，避免并发任务读到半成品。
 - [x] 大文件不嵌入 trajectory JSONL，只记录 artifact URI 和 hash。
 - [x] 增加 workspace/artifact 配额和清理策略，但不得在活跃 episode 中自动删除。
 
@@ -538,7 +539,7 @@ Research -> Design           reset -> step -> reward
 - [x] summary 明确列出 fail、defer、error 和 not-applicable 数量。
 - [x] 对 inspector 冲突保留双方结果，不直接覆盖。
 - [x] 增加 deterministic priority 规则，但仅适用于 trusted native predicates。
-- [x] critic report 写入 artifact store，并可通过 API 获取。
+- [x] critic report 写入 artifact store，并可由 CLI/Python environment 读取。
 
 ## 6.5 与 `inspect_slide` 集成
 
@@ -615,7 +616,7 @@ Research -> Design           reset -> step -> reward
 
 ## 8.1 Strict HTML → PPTX
 
-- [x] 将训练/API 默认 `soft_parsing` 改为 `False`。
+- [x] 将训练与常规生成默认 `soft_parsing` 改为 `False`。
 - [x] validation error 转成明确 invalid artifact 和 hard penalty。
 - [x] soft mode 只能由请求显式开启，并记录所有 ignored warnings。
 - [x] 将 html2pptx stdout/stderr、版本和命令参数写入 export manifest。
@@ -648,7 +649,7 @@ Research -> Design           reset -> step -> reward
 ## 8.5 最终 artifact 状态
 
 - [x] 区分 `draft_html_valid`、`pptx_exported`、`pptx_render_validated`。
-- [x] API 默认只将 `pptx_render_validated` 标为成功终态。
+- [x] CLI/Python environment 默认只将 `pptx_render_validated` 标为成功终态。
 - [x] 导出失败时保留 HTML/PDF 调试 artifact，但不得把 PDF fallback 宣称为 PPTX 成功。
 - [x] `intermediate_output.json` 迁移到更明确的 artifact manifest，同时提供兼容字段。
 
@@ -679,7 +680,7 @@ Research -> Design           reset -> step -> reward
 - [x] defer 不等于 pass；聚合时保留 coverage。
 - [x] inspector error 不直接算 defect miss，但触发 reliability penalty/episode invalidation。
 - [x] 所有 hard gate 的阈值进入 `reward_version` 配置。
-- [x] API 同时返回 reward vector 和 aggregate scalar。
+- [x] Python environment 同时返回 reward vector 和 aggregate scalar。
 
 ## 9.3 Repair delta reward
 
@@ -714,90 +715,63 @@ Research -> Design           reset -> step -> reward
 
 ---
 
-# Phase 10：OpenAI-compatible API
+# Phase 10：OpenAI-compatible 模型接入加固（Outbound Client）
 
-## 10.1 API application 基础
+> 本阶段只要求 Slidex **调用外部 OpenAI-compatible API**。不实现 `/v1/models`、`/v1/chat/completions`、SSE server、文件服务或对外 episode API。
 
-- [ ] 新建 FastAPI app factory，避免 import 时加载模型或读取全局配置。
-- [ ] 使用 lifespan 管理 Playwright browser、HTTP clients 和后台 task registry。
-- [ ] 配置 host、port、API key、CORS、workspace base 和并发上限。
-- [ ] 增加健康检查，但 OpenAI compatibility 核心保持在 `/v1`。
-- [ ] 所有请求生成 request ID，写入日志、episode 和响应 header。
-- [ ] 将内部异常映射为 OpenAI 风格 error object。
+## 10.1 统一模型客户端
 
-## 10.2 `GET /v1/models`
+- [ ] 继续使用 `deeppresenter.utils.config.Endpoint` / `LLM` 作为 outbound client 主入口。
+- [ ] generation policy、critic、semantic examiner 和未来 RL policy 均使用统一 `base_url`、`model`、`api_key` 配置。
+- [ ] 明确 `provider: openai` 表示通过 OpenAI Python SDK 调用兼容 endpoint，而不是仅支持 OpenAI 官方服务。
+- [ ] 保留 `provider: litellm` 作为可选 provider adapter，不让核心流程依赖 LiteLLM。
+- [ ] 支持 endpoint-specific `client_kwargs` 与 `sampling_parameters`，并保存到 trajectory/provenance。
+- [ ] API key 支持从环境变量解析，配置、日志和 artifact manifest 中必须脱敏。
+- [ ] 不在 import/config load 阶段发起网络请求；只在显式 validate 或执行模型调用时连接。
 
-- [ ] 返回 OpenAI 风格 model list。
-- [ ] 至少暴露 `slidex-generate`、`slidex-design`、`slidex-repair`、`slidex-critic`。
-- [ ] 每个 model ID 映射到固定 application capability，不直接泄露底层 provider key。
-- [ ] 返回稳定 owner 和 created 字段。
-- [ ] 为未知 model 返回 404 `model_not_found`。
+## 10.2 Chat Completions 能力
 
-## 10.3 `POST /v1/chat/completions`
+- [ ] 验证普通文本 chat completion。
+- [ ] 验证 multimodal `image_url` / data URL 输入，供 slide critic 使用。
+- [ ] 验证 tools、tool choice 和多 tool-call 响应，供 agent loop 使用。
+- [ ] 验证 structured output / `response_format`；provider 不支持时返回明确 capability error。
+- [ ] 兼容常见 OpenAI-compatible 响应差异，但禁止用宽泛异常捕获伪造成功结果。
+- [ ] 统一解析 usage、finish reason、reasoning 字段和 tool calls。
+- [ ] 保留 endpoint rotation/retry，但记录每次实际使用的 endpoint/model。
 
-- [ ] 使用 OpenAI Chat Completions request schema 的核心字段：model、messages、stream、temperature、top_p、max_tokens、tools、tool_choice、response_format、metadata。
-- [ ] 支持文本 prompt。
-- [ ] 支持 image URL/data URL 输入，用于 critic 和 repair。
-- [ ] 支持 tool calls 的 OpenAI-compatible serialization。
-- [ ] 非流式响应包含 id、object、created、model、choices、usage。
-- [ ] `finish_reason` 区分 stop、tool_calls、length、content_filter/error policy。
-- [ ] artifact 不直接 base64 塞入 content；返回 artifact ID/URL 和结构化 summary。
-- [ ] `slidex-generate` 将请求映射到 generation application service。
-- [ ] `slidex-critic` 接收 artifact reference 或上传后的文件，返回 inspection report。
-- [ ] `slidex-repair` 接收 artifact + target inspection IDs，产生 child artifact。
+## 10.3 Provider 能力声明
 
-## 10.4 Streaming SSE
+- [ ] 在配置中显式声明 text、vision、tools、structured output 等 capability，减少按模型名称猜测。
+- [ ] generation agent 启动前验证 tools capability。
+- [ ] critic 启动前验证 vision/structured-output capability。
+- [ ] capability 缺失时尽早报错；可选 inspector 则返回 `defer/unavailable`，不能假装 pass。
+- [ ] 不要求兼容 provider 实现 OpenAI API 的所有端点，只依赖项目实际使用的 Chat Completions 子集。
 
-- [ ] 实现 `chat.completion.chunk`。
-- [ ] 第一 chunk 发送 role，后续发送 content/tool-call deltas。
-- [ ] 生成过程中将阶段事件转换为兼容文本 delta；详细事件通过 native API 获取。
-- [ ] 正常结束发送 `[DONE]`。
-- [ ] client disconnect 时取消未完成任务并安全关闭 episode，或转为后台任务并返回策略一致的状态。
-- [ ] 测试 OpenAI Python SDK 的 sync/async streaming。
+## 10.4 Agentic RL 接入方式
 
-## 10.5 OpenAI 错误与 usage
+- [ ] internal policy 通过同一 outbound client 调用训练或推理服务，例如 vLLM、SGLang、llama.cpp 或其他 OpenAI-compatible endpoint。
+- [ ] external policy 可直接使用 Python environment 的 observation/action 接口，不要求 Slidex 启动 HTTP server。
+- [ ] 每个 trajectory step 保存 policy endpoint identifier、model、sampling 参数、usage 和 response hash。
+- [ ] policy 与 critic 使用独立 endpoint/config/history，避免奖励模型与策略模型状态串扰。
+- [ ] 支持为 RL rollout 关闭客户端内部重试，避免一次 environment step 隐式对应多次 policy sample。
 
-- [ ] 实现 `invalid_request_error`、`authentication_error`、`rate_limit_error`、`model_not_found`、`server_error`。
-- [ ] 对请求 schema、附件、模型 capability 和 artifact ownership 分别校验。
-- [ ] usage 至少汇总底层 LLM prompt/completion tokens。
-- [ ] 额外的 critic/tool/browser cost 放在 response metadata 或 native episode，不破坏兼容字段。
-- [ ] 不在日志、manifest 或错误中泄漏 API key。
+## 10.5 兼容性测试
 
-## 10.6 文件与 artifact API
-
-- [ ] 提供 multipart upload，返回 file/artifact ID。
-- [ ] 提供 artifact metadata endpoint。
-- [ ] 提供带权限检查的下载 endpoint。
-- [ ] 支持 Range 或合理的大文件传输策略。
-- [ ] 文件类型、大小、页数和压缩包内容做限制。
-- [ ] API 返回的本地路径不得直接暴露宿主机绝对路径。
-
-## 10.7 CLI 接入
-
-- [ ] 增加 `slidex serve-api` 命令。
-- [ ] `serve-api` 与当前“启动本地模型”的 `serve` 分离，避免语义冲突。
-- [ ] 增加 `--host`、`--port`、`--api-key`、`--config`、`--workers`。
-- [ ] Playwright/browser singleton 不支持多进程共享时，默认单 worker，并通过任务并发控制扩展。
-- [ ] 保留 `pptagent` CLI alias，新增 `slidex` 主入口。
-
-## 10.8 Compatibility tests
-
-- [ ] 使用官方 `openai` Python SDK 调用 `/v1/models`。
-- [ ] 测试同步和异步 `chat.completions.create()`。
-- [ ] 测试 stream、tools、response_format 和 image input。
-- [ ] 使用 fake downstream OpenAI-compatible provider 做无外网端到端测试。
-- [ ] 增加 curl smoke tests。
-- [ ] 明确当前只兼容 Chat Completions，若暂不支持 Responses API，返回清晰 404 而非半兼容实现。
+- [ ] 使用本地 fake OpenAI-compatible server 测试 request payload 和响应解析。
+- [ ] 测试文本、图片、tools、structured output、usage 和 reasoning 字段。
+- [ ] 测试 401、404、429、5xx、timeout、invalid JSON 和不完整 tool call。
+- [ ] 使用至少一个本地兼容服务进行 smoke test，不依赖 OpenAI 官方 endpoint。
+- [ ] 真实 provider tests 使用 `llm` marker，不阻塞无凭证 CI。
 
 ### Phase 10 退出条件
 
-- [ ] 标准 OpenAI SDK 可发现 Slidex models 并发起非流式/流式请求。
-- [ ] generation、critic、repair 三类能力共享同一 artifact/episode backend。
-- [ ] OpenAI 兼容层不承担 RL 私有状态协议。
+- [ ] generation policy 和 critic 均可配置为任意满足所需能力的 OpenAI-compatible endpoint。
+- [ ] agentic RL internal policy 可复用同一客户端，且调用参数完整写入 trajectory。
+- [ ] 项目不包含或维护对外 OpenAI-compatible server。
 
 ---
 
-# Phase 11：Native Agentic RL API 与 Environment
+# Phase 11：Agentic RL Environment
 
 ## 11.1 Environment 边界
 
@@ -808,16 +782,15 @@ Research -> Design           reset -> step -> reward
 - [ ] 环境不隐藏自动修改；任何 source 变化都必须对应 action。
 - [ ] 对 observation 做稳定序列化，支持离线 replay。
 
-## 11.2 Episode API
+## 11.2 Python Environment 接口
 
-- [ ] `POST /v1/slidex/episodes`：创建 episode，指定 task、mode、policy、critic/reward versions。
-- [ ] `GET /v1/slidex/episodes/{id}`：获取状态、budget、当前 artifact 和累计 reward。
-- [ ] `POST /v1/slidex/episodes/{id}/steps`：提交 action 并返回 observation/reward/done。
-- [ ] `POST /v1/slidex/episodes/{id}/inspect`：显式触发 critic，不修改环境。
-- [ ] `POST /v1/slidex/episodes/{id}/finalize`：执行最终 export/re-render gate。
-- [ ] `GET /v1/slidex/episodes/{id}/trajectory`：下载完整轨迹 manifest/JSONL。
-- [ ] `DELETE /v1/slidex/episodes/{id}`：取消活跃 episode，保留审计状态。
-- [ ] API 操作使用 idempotency key，防止 trainer retry 重复执行 action。
+- [ ] 提供 `reset(task, config) -> Observation`。
+- [ ] 提供 `step(action) -> StepResult`，包含 observation、reward、done 和 termination reason。
+- [ ] 提供 `inspect()`，显式运行 critic 但不修改环境。
+- [ ] 提供 `finalize()`，执行最终 export/re-render gate。
+- [ ] 提供 `close()`，清理 browser、子进程和临时资源。
+- [ ] 环境接口可被本地 trainer 直接 import，避免 HTTP serialization 和服务生命周期复杂度。
+- [ ] 如未来确需远程 rollout，再单独增加薄 transport adapter，不进入 v1 核心范围。
 
 ## 11.3 Step 执行
 
@@ -827,7 +800,7 @@ Research -> Design           reset -> step -> reward
 - [ ] 运行增量 critic 和 reward。
 - [ ] 返回 reward vector、aggregate、done、termination reason。
 - [ ] 超时、invalid patch 和工具失败作为结构化 step result。
-- [ ] 并发 step 使用 episode lock，禁止同一 episode 分叉写入；显式 branch API 另行实现。
+- [ ] 同一 environment instance 禁止并发 step；显式 branch 通过 artifact 创建新的 environment。
 
 ## 11.4 Trajectory
 
@@ -848,12 +821,12 @@ Research -> Design           reset -> step -> reward
 
 ## 11.6 RL adapters
 
-- [ ] 提供轻量 Python client，不引入 trainer 框架依赖到主包。
+- [ ] 提供轻量 Python environment adapter，不引入 trainer 框架依赖到主包。
 - [ ] 提供 Gymnasium-like adapter 时放到 optional dependency 或独立模块。
 - [ ] 支持 synchronous single-env baseline。
 - [ ] 支持 async vectorized episodes，控制 browser/model 并发。
-- [ ] 将 observation 中的 artifact URL 转换为 trainer 可访问的内容。
-- [ ] 支持 external policy：trainer 通过 API 决定 action。
+- [ ] observation 使用 artifact ID/本地路径或按需加载方法，避免复制大型二进制。
+- [ ] 支持 external policy：trainer 直接读取 observation 并提交 action。
 - [ ] 支持 internal policy：Slidex 调用配置的 OpenAI-compatible policy endpoint。
 
 ## 11.7 单页 repair benchmark
@@ -866,9 +839,9 @@ Research -> Design           reset -> step -> reward
 
 ### Phase 11 退出条件
 
-- [ ] 外部 trainer 可通过 HTTP 完成 reset → step → reward → done。
+- [ ] 本地 trainer 可通过 Python 接口完成 reset → step → reward → done。
 - [ ] episode 可回放，reward 可审计。
-- [ ] OpenAI-compatible policy endpoint 可作为 internal policy 插入同一环境。
+- [ ] OpenAI-compatible outbound endpoint 可作为 internal policy 插入同一环境。
 
 ---
 
@@ -879,7 +852,6 @@ Research -> Design           reset -> step -> reward
 - [ ] 将项目展示名称改为 Slidex。
 - [ ] 在 `pyproject.toml` 增加 `slidex = "deeppresenter.cli:main"`。
 - [ ] 暂时保留 `pptagent` 为兼容 alias，并输出 deprecation 提示策略。
-- [ ] 将 API server 命令命名为 `slidex serve-api`。
 - [ ] 保留 `pptagent-mcp` 仅服务 legacy backend；若新 MCP 需要入口，使用独立 `slidex-mcp`。
 - [ ] 更新 package description、keywords 和默认 workspace 环境变量。
 
@@ -897,7 +869,7 @@ Research -> Design           reset -> step -> reward
 - [ ] 每个 request/episode/step/artifact 使用关联 ID。
 - [ ] 记录 inspector 和 tool timing。
 - [ ] 记录 LLM usage 和 estimated cost，但不将 provider 定价硬编码为 reward truth。
-- [ ] API 日志不输出完整附件、base64 图片或 secret。
+- [ ] 模型调用日志不输出完整附件、base64 图片或 secret。
 
 ## 12.4 Legacy compatibility
 
@@ -924,7 +896,7 @@ Research -> Design           reset -> step -> reward
 - [ ] reward gates 和 delta reward。
 - [ ] local filesystem tools 和 path traversal。
 - [ ] OpenAI request/response serialization。
-- [ ] episode state machine 和 idempotency。
+- [ ] episode state machine 和重复 action 防护。
 
 ## 13.2 Browser/export tests
 
@@ -943,14 +915,13 @@ Research -> Design           reset -> step -> reward
 - [ ] AB/BA reference order control。
 - [ ] defer/abstain 行为。
 
-## 13.4 API contract tests
+## 13.4 OpenAI-compatible Client Contract Tests
 
-- [ ] OpenAI Python SDK sync/async。
-- [ ] SSE chunk 顺序与 `[DONE]`。
-- [ ] auth、rate limit、unknown model、invalid artifact。
-- [ ] multipart upload/download。
-- [ ] client disconnect/cancel。
-- [ ] 同一 episode 并发 step 冲突。
+- [ ] 使用 fake server 验证 OpenAI Python SDK async client 请求。
+- [ ] 验证文本、图片、tools 和 structured output payload。
+- [ ] 验证 401、404、429、5xx、timeout 与 cancellation。
+- [ ] 验证 unknown model、invalid response 和不完整 tool call。
+- [ ] 验证同一 environment 不允许并发 step。
 
 ## 13.5 性能
 
@@ -965,17 +936,16 @@ Research -> Design           reset -> step -> reward
 ## 13.6 本地源码执行安全
 
 - [ ] 明确 Docker 移除后不是强隔离执行环境。
-- [ ] API 默认不向不可信公网用户开放任意 `run_command`。
-- [ ] internal agent tool 与 public API capability 分离。
+- [ ] 本地 `run_command` 仅供受信任工作区 agent 使用，不将其包装为对外网络接口。
 - [ ] workspace path resolver 防止 `..`、symlink 和绝对路径逃逸。
 - [ ] 命令 timeout、输出上限和进程组清理。
-- [ ] 上传文件名清洗，压缩包防 zip-slip/zip-bomb。
-- [ ] API key 使用 constant-time compare 或成熟 auth middleware。
-- [ ] 对生产多租户场景预留外部 sandbox runner 接口，但主项目不依赖 Docker。
+- [ ] 附件文件名清洗，压缩包防 zip-slip/zip-bomb。
+- [ ] API key 不写入日志、trajectory 或 artifact manifest。
+- [ ] 如未来需要不可信多租户执行，另接外部 sandbox runner；主项目不依赖 Docker。
 
 ## 13.7 CI 分层
 
-- [ ] PR 默认运行 unit + API fake-server tests。
+- [ ] PR 默认运行 unit + OpenAI-compatible fake-server tests。
 - [ ] browser tests 在具备 Chromium 的 job 运行。
 - [ ] export tests 在具备 Node/Poppler/LibreOffice 的 job 运行。
 - [ ] real LLM tests 手动或定时运行，不进入普通 PR 门禁。
@@ -985,7 +955,7 @@ Research -> Design           reset -> step -> reward
 
 - [ ] 无凭证 CI 可验证绝大多数核心逻辑。
 - [ ] browser/export/LLM 失败可以区分依赖缺失与代码回归。
-- [ ] public API 不直接暴露任意本地命令能力。
+- [ ] Slidex 不对外暴露任意本地命令网络接口。
 
 ---
 
@@ -1022,9 +992,9 @@ Research -> Design           reset -> step -> reward
 ## 14.4 发布验收
 
 - [ ] 全仓无运行时 Docker 依赖。
-- [ ] Slidex CLI 可完成 generate、inspect、repair、serve-api。
-- [ ] OpenAI SDK 可调用 generate/critic/repair。
-- [ ] native episode API 可完成单页 repair episode。
+- [ ] Slidex CLI 可完成 generate、inspect 和 repair。
+- [ ] generation policy、critic 和 RL policy 可调用外部 OpenAI-compatible 模型服务。
+- [ ] Python environment 可完成单页 repair episode。
 - [ ] 最终 PPTX 经过 re-render validation。
 - [ ] 每个输出有完整 artifact manifest、inspection report 和 reward breakdown。
 - [ ] legacy `pptagent` 路径仍有明确兼容状态。
@@ -1040,7 +1010,7 @@ Research -> Design           reset -> step -> reward
 - [ ] local filesystem tools。
 - [ ] Docker-free 单页生成和导出。
 
-**阻塞关系：** 未完成 Batch A，不开始 API/RL server；否则 server 会继承不可控 Docker 生命周期。
+**阻塞关系：** 未完成 Batch A，不开始 RL environment；否则环境会继承不可控 Docker 生命周期。
 
 ## Batch B：可信检查核心（Phase 2–4）
 
@@ -1067,14 +1037,14 @@ Research -> Design           reset -> step -> reward
 
 **里程碑：** reward 基于最终 PPTX，而不是 HTML 草稿或 IR 标签。
 
-## Batch E：服务化和 RL（Phase 10–11）
+## Batch E：模型兼容与 RL（Phase 10–11）
 
-- [ ] OpenAI-compatible API。
-- [ ] Native episode API。
+- [ ] OpenAI-compatible outbound model client。
+- [ ] Python RL environment。
 - [ ] trajectory/replay。
 - [ ] single-slide repair environment。
 
-**里程碑：** 外部 OpenAI SDK 和 RL trainer 均能调用同一 Slidex backend。
+**里程碑：** generation/critic/internal policy 可调用外部兼容模型，本地 trainer 可直接驱动 Slidex environment。
 
 ## Batch F：迁移、性能与发布（Phase 12–14）
 
@@ -1090,8 +1060,8 @@ Research -> Design           reset -> step -> reward
 
 - [ ] 删除 `docker` dependency。
 - [ ] 增加 `slidex` console script。
-- [ ] 增加 API/RL 新包的 package data（仅确有非 Python 资源时）。
-- [ ] 增加/整理 pytest markers：browser、export、api、rl。
+- [ ] 增加 RL 新包的 package data（仅确有非 Python 资源时）。
+- [ ] 增加/整理 pytest markers：browser、export、llm、rl。
 
 ## `deeppresenter/agents/env.py`
 
@@ -1121,8 +1091,8 @@ Research -> Design           reset -> step -> reward
 ## `deeppresenter/cli/commands.py`
 
 - [ ] 删除 Docker onboarding/check imports。
-- [ ] 分离 model server 与 Slidex API server 命令。
-- [ ] 后续增加 inspect、repair、serve-api 命令。
+- [ ] 明确 `serve` 仅管理可选本地模型服务，不代表 Slidex 对外提供 API。
+- [ ] 后续增加 inspect、repair 命令。
 
 ## `deeppresenter/cli/dependency.py`
 
@@ -1175,8 +1145,8 @@ Research -> Design           reset -> step -> reward
 - [ ] 第一版不把所有 aesthetic quality 压成单一 reward model。
 - [ ] 第一版不从 PNG 恢复 boxes 后宣称等价于 native IR。
 - [ ] 第一版不重写整个 legacy `pptagent/`。
-- [ ] 第一版不同时实现 Chat Completions 和 Responses API 的半兼容版本；先把前者做完整。
-- [ ] 第一版不提供公网多租户任意 shell execution。
+- [ ] 第一版不实现 Slidex 对外 OpenAI-compatible server；仅实现调用外部 Chat Completions-compatible 模型服务。
+- [ ] 第一版不提供任何公网服务或多租户任意 shell execution。
 - [ ] 第一版不把 Docker 改成“可选但默认探测”；运行时应彻底不触碰 Docker。
 - [ ] 第一版不在 export 失败后把 PDF fallback 伪装成 PPTX 成功。
 - [ ] 第一版不将 inspector 的 `defer` 当作零缺陷。
@@ -1187,13 +1157,13 @@ Research -> Design           reset -> step -> reward
 
 只有同时满足以下条件，完整改造才算完成：
 
-- [ ] **Docker-free**：安装、onboarding、generation、inspection、export、API 和 RL episode 均不需要 Docker CLI/daemon/image。
+- [ ] **Docker-free**：安装、onboarding、generation、inspection、export 和 RL episode 均不需要 Docker CLI/daemon/image。
 - [ ] **Source-aware**：Slidex 保存 declared IR、computed IR 和最终 render，并明确其证据边界。
 - [ ] **Paper-grounded critic**：实现 symbolic、atomic neural、semantic、reference-assisted 四类检查，并由冻结 router 分工。
 - [ ] **Structured diagnosis**：每个 defect 有 class、status、evidence、localization、severity 和 repair hint。
 - [ ] **Final-artifact validation**：PPTX 重新渲染，mutation/render fidelity 被检查。
 - [ ] **Repair loop**：生成和修订形成可审计的 parent-child artifact 链。
 - [ ] **Verifiable reward**：reward vector、hard gates、delta reward 可离线复算。
-- [ ] **OpenAI compatibility**：官方 OpenAI Python SDK 可调用 models、chat completions、streaming 和 tool calls。
-- [ ] **Agentic RL ready**：native episode API 支持 reset/step/reward/done、trajectory 和 replay。
+- [ ] **OpenAI compatibility**：generation policy、critic 和 RL policy 可通过 OpenAI Python SDK 调用外部兼容 Chat Completions endpoint。
+- [ ] **Agentic RL ready**：Python environment 支持 reset/step/reward/done、trajectory 和 replay。
 - [ ] **Reproducible evaluation**：critic/router/reward 版本冻结，开发集与测试集分离，defer 和 transfer failure 如实保留。
