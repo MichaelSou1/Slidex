@@ -721,53 +721,53 @@ Research -> Design           reset -> step -> reward
 
 ## 10.1 统一模型客户端
 
-- [ ] 继续使用 `deeppresenter.utils.config.Endpoint` / `LLM` 作为 outbound client 主入口。
-- [ ] generation policy、critic、semantic examiner 和未来 RL policy 均使用统一 `base_url`、`model`、`api_key` 配置。
-- [ ] 明确 `provider: openai` 表示通过 OpenAI Python SDK 调用兼容 endpoint，而不是仅支持 OpenAI 官方服务。
-- [ ] 保留 `provider: litellm` 作为可选 provider adapter，不让核心流程依赖 LiteLLM。
-- [ ] 支持 endpoint-specific `client_kwargs` 与 `sampling_parameters`，并保存到 trajectory/provenance。
-- [ ] API key 支持从环境变量解析，配置、日志和 artifact manifest 中必须脱敏。
-- [ ] 不在 import/config load 阶段发起网络请求；只在显式 validate 或执行模型调用时连接。
+- [x] 继续使用 `deeppresenter.utils.config.Endpoint` / `LLM` 作为 outbound client 主入口。
+- [x] generation policy、critic、semantic examiner 和未来 RL policy 均使用统一 `base_url`、`model`、`api_key` 配置。
+- [x] 明确 `provider: openai` 表示通过 OpenAI Python SDK 调用兼容 endpoint，而不是仅支持 OpenAI 官方服务。
+- [x] 保留 `provider: litellm` 作为可选 provider adapter，不让核心流程依赖 LiteLLM。
+- [x] 支持 endpoint-specific `client_kwargs` 与 `sampling_parameters`，并保存到 trajectory/provenance。
+- [x] API key 支持从环境变量解析，配置、日志和 artifact manifest 中必须脱敏。
+- [x] 不在 import/config load 阶段发起网络请求；只在显式 validate 或执行模型调用时连接。
 
 ## 10.2 Chat Completions 能力
 
-- [ ] 验证普通文本 chat completion。
-- [ ] 验证 multimodal `image_url` / data URL 输入，供 slide critic 使用。
-- [ ] 验证 tools、tool choice 和多 tool-call 响应，供 agent loop 使用。
-- [ ] 验证 structured output / `response_format`；provider 不支持时返回明确 capability error。
-- [ ] 兼容常见 OpenAI-compatible 响应差异，但禁止用宽泛异常捕获伪造成功结果。
-- [ ] 统一解析 usage、finish reason、reasoning 字段和 tool calls。
-- [ ] 保留 endpoint rotation/retry，但记录每次实际使用的 endpoint/model。
+- [x] 验证普通文本 chat completion。
+- [x] 验证 multimodal `image_url` / data URL 输入，供 slide critic 使用。
+- [x] 验证 tools、tool choice 和多 tool-call 响应，供 agent loop 使用。
+- [x] 验证 structured output / `response_format`；provider 不支持时返回明确 capability error。
+- [x] 兼容常见 OpenAI-compatible 响应差异，但禁止用宽泛异常捕获伪造成功结果。
+- [x] 统一解析 usage、finish reason、reasoning 字段和 tool calls。
+- [x] 保留 endpoint rotation/retry，但记录每次实际使用的 endpoint/model。
 
 ## 10.3 Provider 能力声明
 
-- [ ] 在配置中显式声明 text、vision、tools、structured output 等 capability，减少按模型名称猜测。
-- [ ] generation agent 启动前验证 tools capability。
-- [ ] critic 启动前验证 vision/structured-output capability。
-- [ ] capability 缺失时尽早报错；可选 inspector 则返回 `defer/unavailable`，不能假装 pass。
-- [ ] 不要求兼容 provider 实现 OpenAI API 的所有端点，只依赖项目实际使用的 Chat Completions 子集。
+- [x] 在配置中显式声明 text、vision、tools、structured output 等 capability，减少按模型名称猜测。
+- [x] generation agent 启动前验证 tools capability。
+- [x] critic 启动前验证 vision/structured-output capability。
+- [x] capability 缺失时尽早报错；可选 inspector 则返回 `defer/unavailable`，不能假装 pass。
+- [x] 不要求兼容 provider 实现 OpenAI API 的所有端点，只依赖项目实际使用的 Chat Completions 子集。
 
 ## 10.4 Agentic RL 接入方式
 
-- [ ] internal policy 通过同一 outbound client 调用训练或推理服务，例如 vLLM、SGLang、llama.cpp 或其他 OpenAI-compatible endpoint。
-- [ ] external policy 可直接使用 Python environment 的 observation/action 接口，不要求 Slidex 启动 HTTP server。
-- [ ] 每个 trajectory step 保存 policy endpoint identifier、model、sampling 参数、usage 和 response hash。
-- [ ] policy 与 critic 使用独立 endpoint/config/history，避免奖励模型与策略模型状态串扰。
-- [ ] 支持为 RL rollout 关闭客户端内部重试，避免一次 environment step 隐式对应多次 policy sample。
+- [x] internal policy 通过同一 outbound client 调用训练或推理服务，例如 vLLM、SGLang、llama.cpp 或其他 OpenAI-compatible endpoint。
+- [x] external policy 可直接使用 Python environment 的 observation/action 接口，不要求 Slidex 启动 HTTP server。
+- [x] 每个 trajectory step 保存 policy endpoint identifier、model、sampling 参数、usage 和 response hash。
+- [x] policy 与 critic 使用独立 endpoint/config/history，避免奖励模型与策略模型状态串扰。
+- [x] 支持为 RL rollout 关闭客户端内部重试，避免一次 environment step 隐式对应多次 policy sample。
 
 ## 10.5 兼容性测试
 
-- [ ] 使用本地 fake OpenAI-compatible server 测试 request payload 和响应解析。
-- [ ] 测试文本、图片、tools、structured output、usage 和 reasoning 字段。
-- [ ] 测试 401、404、429、5xx、timeout、invalid JSON 和不完整 tool call。
-- [ ] 使用至少一个本地兼容服务进行 smoke test，不依赖 OpenAI 官方 endpoint。
-- [ ] 真实 provider tests 使用 `llm` marker，不阻塞无凭证 CI。
+- [x] 使用本地 fake OpenAI-compatible server 测试 request payload 和响应解析。
+- [x] 测试文本、图片、tools、structured output、usage 和 reasoning 字段。
+- [x] 测试 401、404、429、5xx、timeout、invalid JSON 和不完整 tool call。
+- [x] 使用至少一个本地兼容服务进行 smoke test，不依赖 OpenAI 官方 endpoint。
+- [x] 真实 provider tests 使用 `llm` marker，不阻塞无凭证 CI。
 
 ### Phase 10 退出条件
 
-- [ ] generation policy 和 critic 均可配置为任意满足所需能力的 OpenAI-compatible endpoint。
-- [ ] agentic RL internal policy 可复用同一客户端，且调用参数完整写入 trajectory。
-- [ ] 项目不包含或维护对外 OpenAI-compatible server。
+- [x] generation policy 和 critic 均可配置为任意满足所需能力的 OpenAI-compatible endpoint。
+- [x] agentic RL internal policy 可复用同一客户端，且调用参数完整写入 trajectory。
+- [x] 项目不包含或维护对外 OpenAI-compatible server。
 
 ---
 

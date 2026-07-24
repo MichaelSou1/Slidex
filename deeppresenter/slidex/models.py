@@ -451,11 +451,27 @@ class ArtifactReference(SlidexModel):
     size_bytes: int = Field(ge=0)
 
 
+class PolicyCallRecord(SlidexModel):
+    """Auditable outbound policy call attached to one environment step."""
+
+    endpoint_identifier: str
+    provider: Literal["openai", "litellm"]
+    model: str
+    sampling_parameters: dict[str, Any] = Field(default_factory=dict)
+    usage: dict[str, Any] = Field(default_factory=dict)
+    finish_reasons: list[str | None] = Field(default_factory=list)
+    reasoning: list[str | None] = Field(default_factory=list)
+    tool_calls: list[list[dict[str, Any]]] = Field(default_factory=list)
+    response_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    attempt: int = Field(ge=1)
+
+
 class TrajectoryStep(SlidexModel):
     schema_version: Literal["2.0"] = SCHEMA_VERSION
     step_index: int = Field(ge=0)
     action: dict[str, Any]
     observation: dict[str, Any] = Field(default_factory=dict)
+    policy_call: PolicyCallRecord | None = None
     artifacts: list[ArtifactReference] = Field(default_factory=list)
     reward: RewardBreakdown | None = None
     strict_validation: bool = True

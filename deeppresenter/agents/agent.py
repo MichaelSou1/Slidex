@@ -94,6 +94,8 @@ class Agent:
         self.llm: LLM = config[self.role_config.use_model]
         self.model = self.llm.model_name
         self._setup_toolset()
+        if self.tools:
+            self.llm.require_capabilities("tools")
         if language not in self.role_config.system:
             raise ValueError(f"Language '{language}' not found in system prompts")
         self.error_history: list[ToolCall | ChatMessage] = []

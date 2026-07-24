@@ -1,6 +1,7 @@
 import asyncio
+import hashlib
 import json
-import random
+import os
 from itertools import cycle, product
 from pathlib import Path
 from typing import Any, Literal
@@ -77,44 +78,84 @@ def get_json_from_response(response: str) -> dict | list:
     return json_repair.loads(response)
 
 
-class Endpoint(BaseModel):
-    """LLM Endpoint Configuration"""
+class ModelCapabilities(BaseModel):
+    """Explicit Chat Completions features supported by an endpoint."""
 
-    base_url: str | None = Field(default=None, description="API base URL")
-    model: str = Field(description="Model name")
-    api_key: str | None = Field(default=None, description="API key")
-    provider: Literal["openai", "litellm"] = Field(
-        default="openai",
-        description="Backend provider: 'openai' (default) or 'litellm'",
+    model_config = ConfigDict(extra="forbid")
+
+    text: bool = True
+    vision: bool = False
+    tools: bool = False
+    structured_output: bool = False
+
+
+class ModelCapabilityError(RuntimeError):
+    """Raised before a request that the configured endpoint cannot serve."""
+
+
+class Endpoint(BaseModel):
+    """One lazily connected outbound model endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str | None = Field(
+        default=None, description="OpenAI-compatible API base URL"
     )
-    client_kwargs: dict[str, Any] = Field(
-        default_factory=dict, description="Client parameters"
-    )
-    sampling_parameters: dict[str, Any] = Field(
-        default_factory=dict, description="Sampling parameters"
-    )
+    model: str = Field(description="Provider model name")
+    api_key: str | None = Field(default=None, exclude=True, repr=False)
+    provider: Literal["openai", "litellm"] = "openai"
+    capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
+    client_kwargs: dict[str, Any] = Field(default_factory=dict)
+    sampling_parameters: dict[str, Any] = Field(default_factory=dict)
     _client: AsyncOpenAI | None = PrivateAttr(default=None)
 
-    def model_post_init(self, _) -> None:
-        if self.provider != "litellm":
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_api_key_environment(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        key = data.get("api_key")
+        if isinstance(key, str) and (key.startswith("$") or key.startswith("env:")):
+            name = key[1:] if key.startswith("$") else key[4:]
+            if not name or name not in os.environ:
+                raise ValueError(f"API key environment variable is not set: {name}")
+            data["api_key"] = os.environ[name]
+        return data
+
+    def client(self) -> AsyncOpenAI:
+        """Create the SDK client on first use, never during config loading."""
+        if self.provider != "openai":
+            raise RuntimeError("OpenAI SDK client requested for a LiteLLM endpoint")
+        if self._client is None:
             self._client = AsyncOpenAI(
-                api_key=self.api_key,
+                api_key=self.api_key or "not-set",
                 base_url=self.base_url,
                 **self.client_kwargs,
+            )
+        return self._client
+
+    def require(
+        self, capability: Literal["text", "vision", "tools", "structured_output"]
+    ) -> None:
+        if not getattr(self.capabilities, capability):
+            raise ModelCapabilityError(
+                f"Endpoint {self.model!r} does not declare {capability!r} capability"
             )
 
     async def _call_litellm(
         self,
         messages: list[dict[str, Any]],
-        response_format: type[BaseModel] | None = None,
-        tools: list[dict[str, Any]] | None = None,
+        response_format: type[BaseModel] | dict[str, Any] | None,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
     ) -> ChatCompletion:
         import litellm
 
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "drop_params": True,
+            "drop_params": False,
             **self.sampling_parameters,
         }
         if self.api_key:
@@ -123,7 +164,7 @@ class Endpoint(BaseModel):
             kwargs["api_base"] = self.base_url
         if tools is not None:
             kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            kwargs["tool_choice"] = tool_choice or "auto"
         if response_format is not None:
             kwargs["response_format"] = response_format
         return await litellm.acompletion(**kwargs)
@@ -132,165 +173,233 @@ class Endpoint(BaseModel):
         self,
         messages: list[dict[str, Any]],
         soft_response_parsing: bool,
-        response_format: type[BaseModel] | None = None,
+        response_format: type[BaseModel] | dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> ChatCompletion:
-        """Execute a chat or tool call using the endpoint client"""
-        if self.provider == "litellm":
-            response = await self._call_litellm(messages, response_format, tools)
-        elif tools is not None:
-            response = await self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                **self.sampling_parameters,
+        """Execute the supported Chat Completions subset."""
+        self.require("text")
+        if any(
+            block.get("type") == "image_url"
+            for message in messages
+            for block in (
+                message.get("content")
+                if isinstance(message.get("content"), list)
+                else []
             )
-        elif not soft_response_parsing and response_format is not None:
-            response: ChatCompletion = await self._client.chat.completions.parse(
+        ):
+            self.require("vision")
+        if tools is not None:
+            self.require("tools")
+        if response_format is not None:
+            self.require("structured_output")
+
+        if self.provider == "litellm":
+            response = await self._call_litellm(
+                messages, response_format, tools, tool_choice
+            )
+        elif (
+            tools is not None
+            or soft_response_parsing
+            or response_format is None
+            or isinstance(response_format, dict)
+        ):
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                **self.sampling_parameters,
+            }
+            if tools is not None:
+                kwargs.update(tools=tools, tool_choice=tool_choice or "auto")
+            if isinstance(response_format, dict):
+                kwargs["response_format"] = response_format
+            response = await self.client().chat.completions.create(**kwargs)
+        else:
+            response = await self.client().chat.completions.parse(
                 model=self.model,
                 messages=messages,
                 response_format=response_format,
                 **self.sampling_parameters,
             )
-        else:
-            response: ChatCompletion = await self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                **self.sampling_parameters,
-            )
-        assert response.choices is not None and len(response.choices) > 0, (
-            f"No choices returned from the model, got {response}"
-        )
+
+        if not response.choices:
+            raise ValueError(f"No choices returned from model {self.model}")
         message = response.choices[0].message
-        debug(f"Response from {self.model}: {message}")
-        if response_format is not None:
+        if response_format is not None and isinstance(response_format, type):
+            if not message.content:
+                raise ValueError("Structured response has no content")
             message.content = response_format(
                 **get_json_from_response(message.content)
             ).model_dump_json(indent=2)
-        assert tools is None or len(message.tool_calls or []), (
-            f"No tool call returned from the model, got {message}"
-        )
-        assert message.tool_calls or message.content, (
-            "Empty content returned from the model"
-        )
+        if tools is not None and not message.tool_calls:
+            raise ValueError("Provider returned no tool calls for a tool request")
+        for tool_call in message.tool_calls or []:
+            function = tool_call.function
+            if not function.name or function.arguments is None:
+                raise ValueError("Provider returned an incomplete tool call")
+            try:
+                arguments = json.loads(function.arguments)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "Provider returned invalid tool-call arguments"
+                ) from exc
+            if not isinstance(arguments, dict):
+                raise ValueError("Tool-call arguments must be a JSON object")
+        if not message.tool_calls and not message.content:
+            raise ValueError("Provider returned empty assistant content")
+        debug(f"Response from {self.model}: {message}")
         return response
 
 
 class LLM(BaseModel):
-    """LLM Client Manager"""
+    """Unified outbound client with endpoint rotation and auditable calls."""
 
-    base_url: str | None = Field(default=None, description="API base URL")
-    model: str | None = Field(default=None, description="Model name")
-    api_key: str | None = Field(default=None, description="API key")
-    provider: str = Field(
-        default="openai",
-        description="Backend provider: 'openai' (default) or 'litellm'",
-    )
-    identifier: str | None = Field(
-        default=None,
-        description="Optional identifier for the model instance, this will override property `model_name`",
-    )
-    is_multimodal: bool | None = Field(
-        default=None, description="Whether the model is multimodal"
-    )
-    max_concurrent: int | None = Field(
-        default=None, description="Maximum concurrency limit"
-    )
-    client_kwargs: dict[str, Any] = Field(
-        default_factory=dict, description="Client parameters"
-    )
-    sampling_parameters: dict[str, Any] = Field(
-        default_factory=dict, description="Sampling parameters"
-    )
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = Field(default=None, exclude=True, repr=False)
+    provider: Literal["openai", "litellm"] = "openai"
+    identifier: str | None = None
+    capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
+    is_multimodal: bool | None = Field(default=None, exclude=True)
+    max_concurrent: int | None = None
+    client_kwargs: dict[str, Any] = Field(default_factory=dict)
+    sampling_parameters: dict[str, Any] = Field(default_factory=dict)
     endpoints: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="Additional endpoints for alternating retries",
+        default_factory=list, exclude=True, repr=False
     )
-    soft_response_parsing: bool = Field(
-        default=False,
-        description="Enable soft parsing: parse response content as JSON directly instead of using completion.parse",
-    )
-    min_image_size: int | None = Field(
-        default=None,
-        description="Minimum image size (width * height) for generation, smaller images will be resized proportionally",
-    )
-    secret_logging: bool = Field(
-        default=False, description="Logging detailed endpoint (API key included)"
-    )
+    soft_response_parsing: bool = False
+    min_image_size: int | None = None
+    secret_logging: bool = False
 
     _semaphore: asyncio.Semaphore = PrivateAttr()
     _endpoints: list[Endpoint] = PrivateAttr(default_factory=list)
+    _last_call: dict[str, Any] | None = PrivateAttr(default=None)
 
-    model_config = {"arbitrary_types_allowed": True}
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_capabilities(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        capabilities = dict(data.get("capabilities") or {})
+        if "is_multimodal" in data:
+            capabilities.setdefault("vision", bool(data["is_multimodal"]))
+            capabilities.setdefault("structured_output", True)
+        data["capabilities"] = capabilities
+        key = data.get("api_key")
+        if isinstance(key, str) and (key.startswith("$") or key.startswith("env:")):
+            name = key[1:] if key.startswith("$") else key[4:]
+            if not name or name not in os.environ:
+                raise ValueError(f"API key environment variable is not set: {name}")
+            data["api_key"] = os.environ[name]
+        return data
 
     @property
     def model_name(self) -> str:
         return self.identifier or self._endpoints[0].model.split("/")[-1].split(":")[0]
 
-    def model_post_init(self, context) -> None:
-        """Initialize semaphore and endpoints"""
+    @property
+    def last_call(self) -> dict[str, Any] | None:
+        """Return a copy of provenance for the most recent completed request."""
+        return dict(self._last_call) if self._last_call else None
+
+    def model_post_init(self, context: Any) -> None:
         self._semaphore = asyncio.Semaphore(self.max_concurrent or 10000)
         if self.model:
-            self._endpoints.insert(
-                0,
+            self._endpoints.append(
                 Endpoint(
                     base_url=self.base_url,
                     model=self.model,
                     api_key=self.api_key,
                     provider=self.provider,
+                    capabilities=self.capabilities,
                     client_kwargs=self.client_kwargs,
                     sampling_parameters=self.sampling_parameters,
-                ),
-            )
-        for endpoint in self.endpoints:
-            self._endpoints.append(Endpoint(**endpoint))
-        assert len(self._endpoints) >= 1, "At least one endpoint must be configured"
-
-        model_lower = self._endpoints[0].model.lower()
-        if self.is_multimodal is None:
-            if any(word in model_lower for word in ("gpt", "claude", "gemini", "vl")):
-                self.is_multimodal = True
-                debug(
-                    f"Model {self._endpoints[0].model} is detected as multimodal model, setting `is_multimodal` to True"
                 )
-            else:
-                self.is_multimodal = False
+            )
+        for endpoint_data in self.endpoints:
+            endpoint = dict(endpoint_data)
+            endpoint.setdefault("provider", self.provider)
+            endpoint.setdefault("capabilities", self.capabilities.model_dump())
+            self._endpoints.append(Endpoint(**endpoint))
+        if not self._endpoints:
+            raise ValueError("At least one endpoint must be configured")
+        self.is_multimodal = self._endpoints[0].capabilities.vision
+        super().model_post_init(context)
 
-        return super().model_post_init(context)
+    def require_capabilities(
+        self, *capabilities: Literal["text", "vision", "tools", "structured_output"]
+    ) -> None:
+        """Fail early unless every configured rotation endpoint supports each feature."""
+        for endpoint in self._endpoints:
+            for capability in capabilities:
+                endpoint.require(capability)
 
     async def run(
         self,
         messages: list[dict[str, Any]] | str,
-        response_format: type[BaseModel] | None = None,
+        response_format: type[BaseModel] | dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
         retry_times: int = RETRY_TIMES,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> ChatCompletion:
-        """Unified interface for chat and tool calls with alternating retry"""
+        """Run one logical request, rotating endpoints only when retries are enabled."""
+        if retry_times < 1:
+            raise ValueError("retry_times must be at least one")
         if isinstance(messages, str):
             messages = [{"role": "user", "content": messages}]
 
-        errors = []
+        errors: list[str] = []
         iter_endpoints = cycle(self._endpoints)
         async with self._semaphore:
-            for _ in range(retry_times):
+            for attempt in range(1, retry_times + 1):
                 endpoint = next(iter_endpoints)
                 try:
-                    return await endpoint.call(
+                    response = await endpoint.call(
                         messages,
                         self.soft_response_parsing,
                         response_format,
                         tools,
+                        tool_choice,
                     )
-                except (AssertionError, ValidationError) as e:
-                    errors.append(f"[{endpoint.model}] {e}")
-                except Exception as e:
-                    errors.append(f"[{endpoint.model}] {e}")
-                    if self.secret_logging:
-                        identifider = endpoint
-                    else:
-                        identifider = endpoint.model
-                    logging_openai_exceptions(identifider, e)
+                    payload = response.model_dump_json(exclude_none=True)
+                    self._last_call = {
+                        "endpoint_identifier": self.identifier
+                        or endpoint.base_url
+                        or "openai-default",
+                        "provider": endpoint.provider,
+                        "model": endpoint.model,
+                        "sampling_parameters": dict(endpoint.sampling_parameters),
+                        "usage": response.usage.model_dump(mode="json")
+                        if response.usage
+                        else {},
+                        "finish_reasons": [
+                            choice.finish_reason for choice in response.choices
+                        ],
+                        "reasoning": [
+                            getattr(choice.message, "reasoning", None)
+                            for choice in response.choices
+                        ],
+                        "tool_calls": [
+                            [
+                                call.model_dump(mode="json")
+                                for call in (choice.message.tool_calls or [])
+                            ]
+                            for choice in response.choices
+                        ],
+                        "response_hash": hashlib.sha256(payload.encode()).hexdigest(),
+                        "attempt": attempt,
+                    }
+                    return response
+                except (ModelCapabilityError, ValidationError):
+                    raise
+                except Exception as exc:
+                    errors.append(f"[{endpoint.model}] {type(exc).__name__}: {exc}")
+                    logging_openai_exceptions(
+                        endpoint if self.secret_logging else endpoint.model, exc
+                    )
         raise ValueError(f"All models failed after {retry_times} retries:\n{errors}")
 
     async def generate_image(
@@ -301,92 +410,45 @@ class LLM(BaseModel):
         retry_times: int = RETRY_TIMES,
         pixel_multiple: int = PIXEL_MULTIPLE,
     ) -> ImagesResponse:
-        """Unified interface for image generation"""
-        if self.min_image_size is not None and (width * height) < int(
-            self.min_image_size
-        ):
-            ratio = (int(self.min_image_size) / (width * height)) ** 0.5
-            width = int(width * ratio)
-            height = int(height * ratio)
-        assert (width % pixel_multiple == 0) and (height % PIXEL_MULTIPLE == 0), (
-            f"Image width and height must be a multiple of {pixel_multiple}"
-        )
+        """Generate an image through the configured provider adapter."""
+        if self.min_image_size is not None and width * height < self.min_image_size:
+            ratio = (self.min_image_size / (width * height)) ** 0.5
+            width, height = int(width * ratio), int(height * ratio)
+        if width % pixel_multiple or height % pixel_multiple:
+            raise ValueError(f"Image dimensions must be multiples of {pixel_multiple}")
+        errors: list[str] = []
         async with self._semaphore:
-            errors = []
-            random.shuffle(self._endpoints)
             for retry_idx in range(retry_times):
-                # t2i is stateless
                 endpoint = self._endpoints[retry_idx % len(self._endpoints)]
                 try:
                     if endpoint.provider == "litellm":
                         import litellm
 
-                        response = await litellm.aimage_generation(
+                        return await litellm.aimage_generation(
                             prompt=prompt,
                             model=endpoint.model,
                             size=f"{width}x{height}",
                             timeout=MCP_CALL_TIMEOUT // 5,
-                            drop_params=True,
-                            **(
-                                {"api_key": endpoint.api_key}
-                                if endpoint.api_key
-                                else {}
-                            ),
-                            **(
-                                {"api_base": endpoint.base_url}
-                                if endpoint.base_url
-                                else {}
-                            ),
+                            api_key=endpoint.api_key,
+                            api_base=endpoint.base_url,
                             **endpoint.sampling_parameters,
                         )
-                    else:
-                        response = await endpoint._client.images.generate(
-                            prompt=prompt,
-                            model=endpoint.model,
-                            size=f"{width}x{height}",
-                            timeout=MCP_CALL_TIMEOUT // 5,
-                            **endpoint.sampling_parameters,
-                        )
-                    assert len(response.data) >= 1, (
-                        f"Expected at least an image response, got {response}"
+                    return await endpoint.client().images.generate(
+                        prompt=prompt,
+                        model=endpoint.model,
+                        size=f"{width}x{height}",
+                        timeout=MCP_CALL_TIMEOUT // 5,
+                        **endpoint.sampling_parameters,
                     )
-                    return response
+                except Exception as exc:
+                    errors.append(f"[{endpoint.model}] {type(exc).__name__}: {exc}")
+        raise ValueError(
+            f"All image models failed after {retry_times} retries: {errors}"
+        )
 
-                except (AssertionError, ValidationError) as e:
-                    errors.append(f"[{endpoint.model}] {e}")
-                except Exception as e:
-                    errors.append(f"[{endpoint.model}] {e}")
-                    if self.secret_logging:
-                        identifider = endpoint
-                    else:
-                        identifider = endpoint.model
-                    logging_openai_exceptions(identifider, e)
-            raise ValueError(f"All models failed after {retry_times} retries: {errors}")
-
-    async def validate(self):
-        endpoint = self._endpoints[0]
-        if endpoint.provider == "litellm":
-            import litellm
-
-            try:
-                await litellm.acompletion(
-                    model=endpoint.model,
-                    messages=[{"role": "user", "content": "ping"}],
-                    max_tokens=1,
-                    drop_params=True,
-                    **({"api_key": endpoint.api_key} if endpoint.api_key else {}),
-                    **({"api_base": endpoint.base_url} if endpoint.base_url else {}),
-                )
-            except Exception as e:
-                raise Exception(
-                    f"LiteLLM validation failed for model {endpoint.model}: {e}\n"
-                ) from e
-            return
-        models = await endpoint._client.models.list()
-        if not any(model.id.endswith(endpoint.model) for model in models.data):
-            raise Exception(
-                f"Model {endpoint.model} is not available at {endpoint.base_url}, please check your apikey or {PACKAGE_DIR / 'config.yaml'}\n"
-            )
+    async def validate(self) -> None:
+        """Explicitly connect and verify the Chat Completions subset with a tiny request."""
+        await self.run("ping", retry_times=1)
 
 
 class SlidexConfig(BaseModel):
@@ -480,9 +542,23 @@ class DeepPresenterConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def validate_critic_capabilities(cls, value: Any) -> Any:
-        critic = value.get("critic_model") if isinstance(value, dict) else None
-        if isinstance(critic, dict) and "is_multimodal" not in critic:
-            raise ValueError("critic_model.is_multimodal must be explicitly declared")
+        if not isinstance(value, dict):
+            return value
+        critic = value.get("critic_model")
+        if isinstance(critic, dict):
+            capabilities = critic.get("capabilities")
+            legacy_vision = critic.get("is_multimodal")
+            if capabilities is None and legacy_vision is None:
+                raise ValueError(
+                    "critic_model capabilities must be explicitly declared"
+                )
+            if isinstance(capabilities, dict):
+                missing = {"vision", "structured_output"} - capabilities.keys()
+                if missing:
+                    raise ValueError(
+                        "critic_model must explicitly declare capabilities: "
+                        + ", ".join(sorted(missing))
+                    )
         return value
 
     def model_post_init(self, context):

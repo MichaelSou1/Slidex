@@ -42,6 +42,13 @@ class AtomicNeuralClient:
     def __init__(self, model: LLM, *, require_multimodal: bool = False) -> None:
         if require_multimodal and model.is_multimodal is not True:
             raise NeuralCapabilityError("critic model does not declare image support")
+        if hasattr(model, "require_capabilities"):
+            try:
+                model.require_capabilities("structured_output")
+                if require_multimodal:
+                    model.require_capabilities("vision")
+            except Exception as exc:
+                raise NeuralCapabilityError(str(exc)) from exc
         self.model = model
         self.records: list[NeuralCallRecord] = []
 
@@ -87,7 +94,12 @@ class AtomicNeuralClient:
         )
         started = time.perf_counter()
         response = await self.model.run(
-            [{"role": "user", "content": self._content(prompt, [left_path, right_path])}],
+            [
+                {
+                    "role": "user",
+                    "content": self._content(prompt, [left_path, right_path]),
+                }
+            ],
             response_format=PairwiseVerdict,
             retry_times=1,
         )
@@ -98,7 +110,9 @@ class AtomicNeuralClient:
         self.records.append(record)
         return verdict, record
 
-    def _content(self, prompt: str, image_paths: Sequence[str]) -> str | list[dict[str, Any]]:
+    def _content(
+        self, prompt: str, image_paths: Sequence[str]
+    ) -> str | list[dict[str, Any]]:
         if not image_paths:
             return prompt
         if self.model.is_multimodal is not True:
@@ -108,11 +122,18 @@ class AtomicNeuralClient:
             data = Path(path).read_bytes()
             media_type = mimetypes.guess_type(path)[0] or "image/png"
             encoded = base64.b64encode(data).decode()
-            content.append({"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{encoded}"}})
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{media_type};base64,{encoded}"},
+                }
+            )
         return content
 
     @staticmethod
-    def _atomic_prompt(defect_class: DefectClass, definition: str, evidence: dict[str, Any]) -> str:
+    def _atomic_prompt(
+        defect_class: DefectClass, definition: str, evidence: dict[str, Any]
+    ) -> str:
         return (
             f"Protocol {PROMPT_VERSION}. Inspect exactly one defect class: {defect_class.value}.\n"
             f"Operational definition: {definition}\n"
@@ -132,13 +153,18 @@ class AtomicNeuralClient:
         latency_ms: float,
         condition: str | None,
     ) -> NeuralCallRecord:
+        call = getattr(self.model, "last_call", None) or {}
         endpoint = self.model._endpoints[0]
         usage = response.usage.model_dump(mode="json") if response.usage else {}
         return NeuralCallRecord(
             defect_class=defect_class,
-            endpoint_identifier=self.model.identifier or endpoint.base_url or "openai-default",
-            model=endpoint.model,
-            sampling_parameters=endpoint.sampling_parameters,
+            endpoint_identifier=call.get("endpoint_identifier")
+            or self.model.identifier
+            or endpoint.base_url
+            or "openai-default",
+            model=call.get("model") or endpoint.model,
+            sampling_parameters=call.get("sampling_parameters")
+            or endpoint.sampling_parameters,
             usage=usage,
             latency_ms=latency_ms,
             raw_response=raw,
@@ -172,7 +198,9 @@ class AtomicInspector:
         except Exception as exc:
             return self._error(context.artifact, exc, started)
 
-    def prepare(self, context: InspectionContext) -> tuple[dict[str, Any], list[str]] | InspectionResult:
+    def prepare(
+        self, context: InspectionContext
+    ) -> tuple[dict[str, Any], list[str]] | InspectionResult:
         raise NotImplementedError
 
     def _result(
@@ -183,12 +211,25 @@ class AtomicInspector:
         started: float,
     ) -> InspectionResult:
         status = InspectionStatus(verdict.verdict)
-        evidence = [Evidence(source=self.evidence_source, detail=item, element_ids=verdict.element_ids) for item in verdict.evidence]
+        evidence = [
+            Evidence(
+                source=self.evidence_source,
+                detail=item,
+                element_ids=verdict.element_ids,
+            )
+            for item in verdict.evidence
+        ]
         hint = None
         if verdict.repair_suggestion:
-            hint = RepairHint(action="policy_edit", targets=verdict.element_ids, explanation=verdict.repair_suggestion)
+            hint = RepairHint(
+                action="policy_edit",
+                targets=verdict.element_ids,
+                explanation=verdict.repair_suggestion,
+            )
         if status == InspectionStatus.DEFER:
-            hint = RepairHint(action="provide_evidence", explanation=verdict.defer_reason)
+            hint = RepairHint(
+                action="provide_evidence", explanation=verdict.defer_reason
+            )
         usage = record.usage
         cost = float(usage.get("cost", 0) or 0)
         return InspectionResult(
@@ -222,14 +263,24 @@ class AtomicInspector:
             inspector_version=self.version,
         )
 
-    def _error(self, artifact: SlideArtifact, exc: Exception, started: float) -> InspectionResult:
-        action = "configure_provider_capability" if isinstance(exc, NeuralCapabilityError) else "retry_inspection"
+    def _error(
+        self, artifact: SlideArtifact, exc: Exception, started: float
+    ) -> InspectionResult:
+        action = (
+            "configure_provider_capability"
+            if isinstance(exc, NeuralCapabilityError)
+            else "retry_inspection"
+        )
         return InspectionResult(
             defect_class=self.defect_class,
             status=InspectionStatus.ERROR,
             severity=0,
             confidence=0,
-            evidence=[Evidence(source=self.evidence_source, detail=f"{type(exc).__name__}: {exc}")],
+            evidence=[
+                Evidence(
+                    source=self.evidence_source, detail=f"{type(exc).__name__}: {exc}"
+                )
+            ],
             repair_hint=RepairHint(action=action, explanation=str(exc)),
             inspector_name=self.name,
             inspector_version=self.version,
@@ -248,8 +299,14 @@ class TitleBodyMismatchInspector(AtomicInspector):
 
     def prepare(self, context: InspectionContext) -> tuple[dict[str, Any], list[str]]:
         elements = _flatten(context.artifact.declared_ir.elements)
-        titles = [_element_payload(item) for item in elements if item.semantic_role == "title"]
-        bodies = [_element_payload(item) for item in elements if item.semantic_role in {"body", "content", "caption", "claim"}]
+        titles = [
+            _element_payload(item) for item in elements if item.semantic_role == "title"
+        ]
+        bodies = [
+            _element_payload(item)
+            for item in elements
+            if item.semantic_role in {"body", "content", "caption", "claim"}
+        ]
         images = [context.render_path] if context.render_path else []
         return {"titles": titles, "bodies": bodies}, images
 
@@ -274,15 +331,25 @@ class DensityInspector(AtomicInspector):
 
     async def inspect(self, context: InspectionContext) -> InspectionResult:
         statistics = _density_statistics(context.artifact)
-        if statistics["character_count"] > self.over_chars or statistics["element_count"] > self.over_elements:
+        if (
+            statistics["character_count"] > self.over_chars
+            or statistics["element_count"] > self.over_elements
+        ):
             verdict = AtomicVerdict(
-                verdict="fail", severity=1, confidence=1,
+                verdict="fail",
+                severity=1,
+                confidence=1,
                 evidence=[f"Deterministic density threshold exceeded: {statistics}"],
-                element_ids=statistics["element_ids"], repair_suggestion="Reduce or split dense content.",
+                element_ids=statistics["element_ids"],
+                repair_suggestion="Reduce or split dense content.",
             )
             fake = NeuralCallRecord(
-                defect_class=self.defect_class, endpoint_identifier="deterministic", model="none",
-                latency_ms=0, raw_response=verdict.model_dump_json(), prompt_hash="0" * 64,
+                defect_class=self.defect_class,
+                endpoint_identifier="deterministic",
+                model="none",
+                latency_ms=0,
+                raw_response=verdict.model_dump_json(),
+                prompt_hash="0" * 64,
             )
             return self._result(context.artifact, verdict, fake, time.perf_counter())
         return await super().inspect(context)
@@ -303,10 +370,15 @@ class ImageTextContradictionInspector(AtomicInspector):
         self.image_id = image_id
         self.text_id = text_id
 
-    def prepare(self, context: InspectionContext) -> tuple[dict[str, Any], list[str]] | InspectionResult:
+    def prepare(
+        self, context: InspectionContext
+    ) -> tuple[dict[str, Any], list[str]] | InspectionResult:
         if not context.render_path:
             return self._defer(context.artifact, "render_required")
-        elements = {item.element_id: item for item in _flatten(context.artifact.declared_ir.elements)}
+        elements = {
+            item.element_id: item
+            for item in _flatten(context.artifact.declared_ir.elements)
+        }
         if self.image_id not in elements or self.text_id not in elements:
             return self._defer(context.artifact, "image_claim_pair_missing")
         return {
@@ -324,26 +396,56 @@ class RenderAnomalyInspector(AtomicInspector):
         super().__init__(client)
         self.target_id = target_id
 
-    def prepare(self, context: InspectionContext) -> tuple[dict[str, Any], list[str]] | InspectionResult:
+    def prepare(
+        self, context: InspectionContext
+    ) -> tuple[dict[str, Any], list[str]] | InspectionResult:
         if context.artifact.computed_ir:
-            computed = {item.element_id: item for item in _flatten(context.artifact.computed_ir.elements)}
+            computed = {
+                item.element_id: item
+                for item in _flatten(context.artifact.computed_ir.elements)
+            }
             target = computed.get(self.target_id)
-            if target and (target.clipped or target.partially_outside_page or target.scroll_width > target.client_width or target.scroll_height > target.client_height):
+            if target and (
+                target.clipped
+                or target.partially_outside_page
+                or target.scroll_width > target.client_width
+                or target.scroll_height > target.client_height
+            ):
                 return InspectionResult(
-                    defect_class=self.defect_class, status=InspectionStatus.FAIL, severity=1,
-                    confidence=1, evidence=[Evidence(source=EvidenceSource.COMPUTED_IR, detail="DOM geometry deterministically establishes overflow", element_ids=[self.target_id])],
-                    element_ids=[self.target_id], repair_hint=RepairHint(action="resize_container", targets=[self.target_id]),
-                    inspector_name=self.name, inspector_version=self.version,
+                    defect_class=self.defect_class,
+                    status=InspectionStatus.FAIL,
+                    severity=1,
+                    confidence=1,
+                    evidence=[
+                        Evidence(
+                            source=EvidenceSource.COMPUTED_IR,
+                            detail="DOM geometry deterministically establishes overflow",
+                            element_ids=[self.target_id],
+                        )
+                    ],
+                    element_ids=[self.target_id],
+                    repair_hint=RepairHint(
+                        action="resize_container", targets=[self.target_id]
+                    ),
+                    inspector_name=self.name,
+                    inspector_version=self.version,
                 )
         if not context.render_path:
             return self._defer(context.artifact, "render_required")
-        return {"target_element_id": self.target_id, "instruction": "Use the target bounding box visible in the supplied overlay."}, [context.render_path]
+        return {
+            "target_element_id": self.target_id,
+            "instruction": "Use the target bounding box visible in the supplied overlay.",
+        }, [context.render_path]
 
 
 class DeckSemanticInspector(AtomicInspector):
     name = "deck-semantic"
 
-    def __init__(self, client: AtomicNeuralClient, defect_class: Literal[DefectClass.S2, DefectClass.S5]) -> None:
+    def __init__(
+        self,
+        client: AtomicNeuralClient,
+        defect_class: Literal[DefectClass.S2, DefectClass.S5],
+    ) -> None:
         if defect_class not in {DefectClass.S2, DefectClass.S5}:
             raise ValueError("deck semantic inspector supports only S2 or S5")
         super().__init__(client)
@@ -358,12 +460,27 @@ class DeckSemanticInspector(AtomicInspector):
     def evidence_source(self) -> EvidenceSource:
         return EvidenceSource.DECK_TEXT
 
-    def prepare(self, context: InspectionContext) -> tuple[dict[str, Any], list[str]] | InspectionResult:
-        if self.defect_class == DefectClass.S5 and not context.task and not context.approved_outline:
+    def prepare(
+        self, context: InspectionContext
+    ) -> tuple[dict[str, Any], list[str]] | InspectionResult:
+        if (
+            self.defect_class == DefectClass.S5
+            and not context.task
+            and not context.approved_outline
+        ):
             return InspectionResult(
-                defect_class=self.defect_class, status=InspectionStatus.NOT_APPLICABLE,
-                severity=0, confidence=1, evidence=[Evidence(source=EvidenceSource.DECK_TEXT, detail="Task has no approved fixed logical structure")],
-                inspector_name=self.name, inspector_version=self.version,
+                defect_class=self.defect_class,
+                status=InspectionStatus.NOT_APPLICABLE,
+                severity=0,
+                confidence=1,
+                evidence=[
+                    Evidence(
+                        source=EvidenceSource.DECK_TEXT,
+                        detail="Task has no approved fixed logical structure",
+                    )
+                ],
+                inspector_name=self.name,
+                inspector_version=self.version,
             )
         return {
             "outline": context.deck_outline,
@@ -382,11 +499,19 @@ def _flatten(elements: Sequence[SlideElement | ComputedSlideElement]) -> list[An
 
 
 def _element_payload(element: SlideElement) -> dict[str, str | None]:
-    return {"element_id": element.element_id, "role": element.semantic_role, "text": element.text}
+    return {
+        "element_id": element.element_id,
+        "role": element.semantic_role,
+        "text": element.text,
+    }
 
 
 def _density_statistics(artifact: SlideArtifact) -> dict[str, Any]:
-    elements = _flatten(artifact.computed_ir.elements if artifact.computed_ir else artifact.declared_ir.elements)
+    elements = _flatten(
+        artifact.computed_ir.elements
+        if artifact.computed_ir
+        else artifact.declared_ir.elements
+    )
     text_elements = [item for item in elements if item.text.strip()]
     area = artifact.declared_ir.page_width * artifact.declared_ir.page_height
     occupied = sum(item.bbox.width * item.bbox.height for item in elements if item.bbox)
@@ -404,5 +529,12 @@ def _density_statistics(artifact: SlideArtifact) -> dict[str, Any]:
         "whitespace_ratio": max(0.0, 1 - occupied / area),
         "minimum_font_size_px": min(font_sizes) if font_sizes else None,
         "element_ids": [item.element_id for item in text_elements],
-        "page_role": next((item.semantic_role for item in elements if item.semantic_role in {"title-slide", "section", "content"}), None),
+        "page_role": next(
+            (
+                item.semantic_role
+                for item in elements
+                if item.semantic_role in {"title-slide", "section", "content"}
+            ),
+            None,
+        ),
     }

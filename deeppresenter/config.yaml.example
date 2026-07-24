@@ -6,17 +6,20 @@ async_tool_mode: false
 research_agent:
   base_url: "https://openrouter.ai/api/v1"
   model: "anthropic/claude-sonnet-4.5"
-  api_key: "your_key"
+  api_key: "$SLIDEX_API_KEY"
+  capabilities: { text: true, vision: true, tools: true, structured_output: true }
 
 design_agent:
   base_url: "https://openrouter.ai/api/v1"
   model: "google/gemini-3-pro-preview"
-  api_key: "your_key"
+  api_key: "$SLIDEX_API_KEY"
+  capabilities: { text: true, vision: true, tools: true, structured_output: true }
 
 long_context_model:
   base_url: "https://open.bigmodel.cn/api/paas/v4/"
   model: "glm-4.5"
-  api_key: "your_key"
+  api_key: "$SLIDEX_API_KEY"
+  capabilities: { text: true, vision: false, tools: false, structured_output: false }
 
 # # LiteLLM provider example — pip install pptagent[litellm]
 # # Routes to 100+ providers (Anthropic, Gemini, Bedrock, etc.) without a proxy.
@@ -44,16 +47,16 @@ long_context_model:
 critic_model:
   base_url: "https://openrouter.ai/api/v1"
   model: "google/gemini-3-pro-preview"
-  api_key: "your_key"
-  is_multimodal: true
+  api_key: "$SLIDEX_API_KEY"
+  capabilities: { text: true, vision: true, tools: false, structured_output: true }
   sampling_parameters: { "temperature": 0, "top_p": 1, "seed": 42 }
 
 # semantic_model is optional and remains independent from policy history.
 # semantic_model:
 #   base_url: "https://openrouter.ai/api/v1"
 #   model: "anthropic/claude-sonnet-4.5"
-#   api_key: "your_key"
-#   is_multimodal: false
+#   api_key: "$SLIDEX_API_KEY"
+#   capabilities: { text: true, vision: false, tools: false, structured_output: true }
 #   sampling_parameters: { "temperature": 0, "top_p": 1, "seed": 42 }
 
 slidex:
