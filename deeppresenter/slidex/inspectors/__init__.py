@@ -13,9 +13,27 @@ from deeppresenter.slidex.inspectors.style import (
     TypographyInspector,
 )
 from deeppresenter.slidex.inspectors.terminology import TerminologyInspector
+from deeppresenter.slidex.inspectors.neural import (
+    AtomicNeuralClient,
+    DeckSemanticInspector,
+    DensityInspector,
+    ImageTextContradictionInspector,
+    NeuralCapabilityError,
+    RenderAnomalyInspector,
+    TitleBodyMismatchInspector,
+)
+from deeppresenter.slidex.inspectors.reference import ReferenceInspector
 
 __all__ = [
     "AlignmentInspector",
+    "AtomicNeuralClient",
+    "DeckSemanticInspector",
+    "DensityInspector",
+    "ImageTextContradictionInspector",
+    "NeuralCapabilityError",
+    "ReferenceInspector",
+    "RenderAnomalyInspector",
+    "TitleBodyMismatchInspector",
     "BrandColorInspector",
     "DeclaredOverflowInspector",
     "Inspector",

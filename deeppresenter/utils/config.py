@@ -10,7 +10,7 @@ import yaml
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 from openai.types.images_response import ImagesResponse
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
 from deeppresenter.utils.constants import (
     CONTEXT_LENGTH_LIMIT,
@@ -460,6 +460,14 @@ class DeepPresenterConfig(BaseModel):
         default=None, description="Optional independent semantic critic model"
     )
     slidex: SlidexConfig = Field(default_factory=SlidexConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_critic_capabilities(cls, value: Any) -> Any:
+        critic = value.get("critic_model") if isinstance(value, dict) else None
+        if isinstance(critic, dict) and "is_multimodal" not in critic:
+            raise ValueError("critic_model.is_multimodal must be explicitly declared")
+        return value
 
     def model_post_init(self, context):
         if self.context_window is None:

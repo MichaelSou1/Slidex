@@ -410,93 +410,95 @@ Research -> Design           reset -> step -> reward
 
 # Phase 5：实现 Atomic Neural Inspectors 与 Failure Attribution
 
+> 状态（2026-07-24）：原子神经检查、reference 顺序控制、A/B/C failure attribution、fake provider 测试与真实 API smoke test 已完成。
+
 ## 5.1 独立 critic 模型配置
 
-- [ ] 增加 `critic_model`，要求显式声明 `is_multimodal`，不要只根据模型名称猜测。
-- [ ] 增加可选 `semantic_model` 处理 deck-level S2/S5。
-- [ ] critic 调用使用独立、无生成 history 的 request。
-- [ ] 固定 temperature、top_p、seed（服务支持时）和 response schema。
-- [ ] 保存 endpoint identifier、model、sampling 参数、usage、latency 和 raw response。
-- [ ] 对不支持 image、JSON schema 或 tool call 的 OpenAI-compatible provider 给出 capability error。
+- [x] 增加 `critic_model`，要求显式声明 `is_multimodal`，不要只根据模型名称猜测。
+- [x] 增加可选 `semantic_model` 处理 deck-level S2/S5。
+- [x] critic 调用使用独立、无生成 history 的 request。
+- [x] 固定 temperature、top_p、seed（服务支持时）和 response schema。
+- [x] 保存 endpoint identifier、model、sampling 参数、usage、latency 和 raw response。
+- [x] 对不支持 image、JSON schema 或 tool call 的 OpenAI-compatible provider 给出 capability error。
 
 ## 5.2 原子查询协议
 
-- [ ] 每次 neural call 只检查一个 defect class。
-- [ ] prompt 必须给出 operational definition，而不是抽象“是否美观”。
-- [ ] 要求 `verdict = pass | fail | defer`。
-- [ ] 要求 localization：element ID 或归一化 bbox。
-- [ ] 要求 evidence：可观察事实，不接受只给总体分数。
-- [ ] 要求 repair suggestion，但 repair suggestion 不参与 defect verdict。
-- [ ] 使用 Pydantic structured output；soft parsing 失败时返回 `error`。
-- [ ] 禁止在同一 prompt 中展示 ground-truth label 或 mutation metadata。
+- [x] 每次 neural call 只检查一个 defect class。
+- [x] prompt 必须给出 operational definition，而不是抽象“是否美观”。
+- [x] 要求 `verdict = pass | fail | defer`。
+- [x] 要求 localization：element ID 或归一化 bbox。
+- [x] 要求 evidence：可观察事实，不接受只给总体分数。
+- [x] 要求 repair suggestion，但 repair suggestion 不参与 defect verdict。
+- [x] 使用 Pydantic structured output；soft parsing 失败时返回 `error`。
+- [x] 禁止在同一 prompt 中展示 ground-truth label 或 mutation metadata。
 
 ## 5.3 S1 title/body mismatch
 
-- [ ] 从 IR 提供 title 和 body text，同时提供 render 作为补充证据。
-- [ ] 原子询问正文是否与标题主题矛盾或明显不匹配。
-- [ ] 区分“不完整”与“矛盾”，避免泛化为内容质量评分。
-- [ ] 输出冲突文本片段和 element IDs。
+- [x] 从 IR 提供 title 和 body text，同时提供 render 作为补充证据。
+- [x] 原子询问正文是否与标题主题矛盾或明显不匹配。
+- [x] 区分“不完整”与“矛盾”，避免泛化为内容质量评分。
+- [x] 输出冲突文本片段和 element IDs。
 
 ## 5.4 S4 density violation
 
-- [ ] 先计算 symbolic statistics：字符数、占用面积、字号、空白率、元素数。
-- [ ] 明显超阈值情况可直接 deterministic fail。
-- [ ] 边界情况由 semantic examiner 判断信息量是否与页面作用匹配。
-- [ ] 区分 over-packed、under-packed 和 intentional minimal title slide。
-- [ ] 输出统计证据和语义理由。
+- [x] 先计算 symbolic statistics：字符数、占用面积、字号、空白率、元素数。
+- [x] 明显超阈值情况可直接 deterministic fail。
+- [x] 边界情况由 semantic examiner 判断信息量是否与页面作用匹配。
+- [x] 区分 over-packed、under-packed 和 intentional minimal title slide。
+- [x] 输出统计证据和语义理由。
 
 ## 5.5 S6 image/text contradiction
 
-- [ ] 原子检查单个 image-caption/claim pair，不一次检查整页所有语义关系。
-- [ ] 从 IR 提供周围 claim/caption，并提供 crop 或整页 render。
-- [ ] 单视图证据不足时返回 `defer`。
-- [ ] 有 clean/reference 时使用 pairwise comparison。
-- [ ] 增加顺序对调控制，记录 positional disagreement。
+- [x] 原子检查单个 image-caption/claim pair，不一次检查整页所有语义关系。
+- [x] 从 IR 提供周围 claim/caption，并提供 crop 或整页 render。
+- [x] 单视图证据不足时返回 `defer`。
+- [x] 有 clean/reference 时使用 pairwise comparison。
+- [x] 增加顺序对调控制，记录 positional disagreement。
 
 ## 5.6 unresolved G7 render anomaly
 
-- [ ] 仅对 DOM symbolic checker 无法判定的 render anomaly 调用 atomic VLM。
-- [ ] query 明确询问“内容是否越过或被裁剪于指定容器”，并提供目标 bbox overlay。
-- [ ] 要求定位目标元素，禁止 broad visual-quality rubric。
-- [ ] DOM 已确定 fail 时不得重复调用 VLM 浪费预算。
+- [x] 仅对 DOM symbolic checker 无法判定的 render anomaly 调用 atomic VLM。
+- [x] query 明确询问“内容是否越过或被裁剪于指定容器”，并提供目标 bbox overlay。
+- [x] 要求定位目标元素，禁止 broad visual-quality rubric。
+- [x] DOM 已确定 fail 时不得重复调用 VLM 浪费预算。
 
 ## 5.7 Deck-level S2/S5
 
-- [ ] S2 narrative-order break 使用 deck outline、每页标题和摘要，不依赖逐页截图堆叠。
-- [ ] S5 missing logic section 根据任务/批准 outline 判断缺失步骤。
-- [ ] 明确这是 deck-level semantic inspector，结果关联相关 slide IDs。
-- [ ] 允许任务本身没有固定逻辑结构时返回 `not_applicable`。
+- [x] S2 narrative-order break 使用 deck outline、每页标题和摘要，不依赖逐页截图堆叠。
+- [x] S5 missing logic section 根据任务/批准 outline 判断缺失步骤。
+- [x] 明确这是 deck-level semantic inspector，结果关联相关 slide IDs。
+- [x] 允许任务本身没有固定逻辑结构时返回 `not_applicable`。
 
 ## 5.8 Reference-assisted inspector
 
-- [ ] `InspectionContext` 支持 clean/reference artifact ID。
-- [ ] reference 必须与目标页在 aspect ratio、renderer 和页面角色上兼容。
-- [ ] pairwise prompt 支持 `left | right | tie | defer`。
-- [ ] 同一 pair 运行 AB/BA 两种顺序，并聚合为 order-controlled verdict。
-- [ ] clean-vs-clean 控制用于检测 forced-choice 偏差。
-- [ ] 无 reference 时返回 `defer: clean_reference_required`，不自动伪造 synthetic twin。
+- [x] `InspectionContext` 支持 clean/reference artifact ID。
+- [x] reference 必须与目标页在 aspect ratio、renderer 和页面角色上兼容。
+- [x] pairwise prompt 支持 `left | right | tie | defer`。
+- [x] 同一 pair 运行 AB/BA 两种顺序，并聚合为 order-controlled verdict。
+- [x] clean-vs-clean 控制用于检测 forced-choice 偏差。
+- [x] 无 reference 时返回 `defer: clean_reference_required`，不自动伪造 synthetic twin。
 
 ## 5.9 Failure attribution protocol
 
-- [ ] 实现论文中的观察条件：A=image、B=trusted structured IR、C=image+IR、可选 reference。
-- [ ] attribution 只用于开发/评测和未知 class 诊断，不要求生产每次都运行全部条件。
-- [ ] 记录 `image_sufficient`、`structure_rescued`、`format_suppressed`、`reference_assisted`、`unresolved`。
-- [ ] attribution 结论描述操作层面的证据需求，不声称揭示模型内部机制。
-- [ ] 为同一模型/同一 item 保存 whole-rubric 与 atomic query 对照。
-- [ ] 支持 repeated whole-rubric budget control，用于验证收益不是仅来自更多采样。
+- [x] 实现论文中的观察条件：A=image、B=trusted structured IR、C=image+IR、可选 reference。
+- [x] attribution 只用于开发/评测和未知 class 诊断，不要求生产每次都运行全部条件。
+- [x] 记录 `image_sufficient`、`structure_rescued`、`format_suppressed`、`reference_assisted`、`unresolved`。
+- [x] attribution 结论描述操作层面的证据需求，不声称揭示模型内部机制。
+- [x] 为同一模型/同一 item 保存 whole-rubric 与 atomic query 对照。
+- [x] 支持 repeated whole-rubric budget control，用于验证收益不是仅来自更多采样。
 
 ## 5.10 Neural inspector 测试
 
-- [ ] 使用 fake OpenAI-compatible server 测试请求 payload 和 structured response。
-- [ ] 测试 timeout、429、invalid JSON、missing verdict、provider 不支持 image。
-- [ ] 对真实模型测试放入 `llm` marker，不阻塞无凭证 CI。
-- [ ] 保存一组人工审核的 atomic-query fixtures，检查 prompt 版本变化。
+- [x] 使用 fake OpenAI-compatible server 测试请求 payload 和 structured response。
+- [x] 测试 timeout、429、invalid JSON、missing verdict、provider 不支持 image。
+- [x] 对真实模型测试放入 `llm` marker，不阻塞无凭证 CI。
+- [x] 保存一组人工审核的 atomic-query fixtures，检查 prompt 版本变化。
 
 ### Phase 5 退出条件
 
-- [ ] 每个 neural inspector 都是单类、可定位、可 defer 的结构化调用。
-- [ ] reference-required 情况不会被错误判为 pass/fail。
-- [ ] failure attribution 可重现实验性 A/B/C 对照。
+- [x] 每个 neural inspector 都是单类、可定位、可 defer 的结构化调用。
+- [x] reference-required 情况不会被错误判为 pass/fail。
+- [x] failure attribution 可重现实验性 A/B/C 对照。
 
 ---
 

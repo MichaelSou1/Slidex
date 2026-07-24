@@ -303,3 +303,89 @@ def _validate_element_tree(elements: list[SlideElement]) -> None:
 
     for root in elements:
         visit(root, None)
+
+
+class NormalizedBoundingBox(SlidexModel):
+    """A localization box normalized to the [0, 1] slide coordinate space."""
+
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    width: float = Field(gt=0, le=1)
+    height: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> NormalizedBoundingBox:
+        if self.x + self.width > 1 or self.y + self.height > 1:
+            raise ValueError("normalized bounding box exceeds page bounds")
+        return self
+
+
+class InspectionContext(SlidexModel):
+    """Explicit evidence available to neural inspectors."""
+
+    artifact: SlideArtifact
+    render_path: str | None = None
+    reference_artifact_id: str | None = None
+    reference_artifact: SlideArtifact | None = None
+    reference_render_path: str | None = None
+    deck_outline: list[str] = Field(default_factory=list)
+    slide_summaries: dict[str, str] = Field(default_factory=dict)
+    approved_outline: list[str] = Field(default_factory=list)
+    task: str | None = None
+
+
+class AtomicVerdict(SlidexModel):
+    """Strict response schema shared by all single-defect model calls."""
+
+    verdict: Literal["pass", "fail", "defer"]
+    severity: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    evidence: list[str] = Field(min_length=1)
+    element_ids: list[str] = Field(default_factory=list)
+    bboxes: list[NormalizedBoundingBox] = Field(default_factory=list)
+    repair_suggestion: str | None = None
+    defer_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_defer_reason(self) -> AtomicVerdict:
+        if self.verdict == "defer" and not self.defer_reason:
+            raise ValueError("defer_reason is required for a deferred verdict")
+        return self
+
+
+class PairwiseVerdict(SlidexModel):
+    verdict: Literal["left", "right", "tie", "defer"]
+    confidence: float = Field(ge=0, le=1)
+    evidence: list[str] = Field(min_length=1)
+    defer_reason: str | None = None
+
+
+class NeuralCallRecord(SlidexModel):
+    """Replay metadata for one stateless OpenAI-compatible request."""
+
+    defect_class: DefectClass
+    endpoint_identifier: str
+    model: str
+    sampling_parameters: dict[str, Any] = Field(default_factory=dict)
+    usage: dict[str, Any] = Field(default_factory=dict)
+    latency_ms: float = Field(ge=0)
+    raw_response: str
+    prompt_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    condition: str | None = None
+
+
+class AttributionLabel(StrEnum):
+    IMAGE_SUFFICIENT = "image_sufficient"
+    STRUCTURE_RESCUED = "structure_rescued"
+    FORMAT_SUPPRESSED = "format_suppressed"
+    REFERENCE_ASSISTED = "reference_assisted"
+    UNRESOLVED = "unresolved"
+
+
+class FailureAttribution(SlidexModel):
+    defect_class: DefectClass
+    label: AttributionLabel
+    conditions: dict[str, AtomicVerdict] = Field(default_factory=dict)
+    whole_rubric: list[AtomicVerdict] = Field(default_factory=list)
+    records: list[NeuralCallRecord] = Field(default_factory=list)
+    explanation: str
