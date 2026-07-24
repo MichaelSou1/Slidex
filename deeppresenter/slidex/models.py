@@ -198,6 +198,94 @@ class RenderArtifact(SlidexModel):
     renderer: RendererInfo
 
 
+class FinalArtifactStatus(StrEnum):
+    """Lifecycle state of a generated presentation deliverable."""
+
+    DRAFT_HTML_VALID = "draft_html_valid"
+    PPTX_EXPORTED = "pptx_exported"
+    PPTX_RENDER_VALIDATED = "pptx_render_validated"
+    INVALID_ARTIFACT = "invalid_artifact"
+    CAPABILITY_ERROR = "capability_error"
+
+
+class ExportCommandRecord(SlidexModel):
+    """Replay metadata for one external export command."""
+
+    executable: str
+    arguments: list[str] = Field(default_factory=list)
+    version: str
+    return_code: int
+    stdout: str = ""
+    stderr: str = ""
+    duration_ms: float = Field(ge=0)
+
+
+class FidelityPageResult(SlidexModel):
+    """Multi-signal comparison between one HTML render and PPTX re-render."""
+
+    slide_id: str
+    html_render_uri: str
+    pptx_render_uri: str
+    html_size: tuple[int, int]
+    pptx_size: tuple[int, int]
+    pixel_difference: float = Field(ge=0, le=1)
+    perceptual_similarity: float = Field(ge=0, le=1)
+    text_presence: float = Field(ge=0, le=1)
+    missing_text: list[str] = Field(default_factory=list)
+    missing_images: int = Field(ge=0, default=0)
+    font_substitutions: list[str] = Field(default_factory=list)
+    position_drift: dict[str, float] = Field(default_factory=dict)
+    final_render_findings: list[str] = Field(default_factory=list)
+    passed: bool
+
+
+class RenderFidelityReport(SlidexModel):
+    """Deck-level export fidelity gate; no single similarity decides validity."""
+
+    page_results: list[FidelityPageResult] = Field(default_factory=list)
+    expected_page_count: int = Field(ge=0)
+    actual_page_count: int = Field(ge=0)
+    page_count_matches: bool
+    renderer: RendererInfo
+    export_fidelity_failure: bool
+    failure_reasons: list[str] = Field(default_factory=list)
+
+
+class ExportManifest(SlidexModel):
+    """Auditable final-deliverable manifest for export and re-render."""
+
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    export_id: str = Field(min_length=1)
+    status: FinalArtifactStatus
+    source_uris: list[str] = Field(default_factory=list)
+    source_artifact_ids: list[str] = Field(default_factory=list)
+    critic_report_uris: list[str] = Field(default_factory=list)
+    strict_validation: bool = True
+    soft_mode_explicit: bool = False
+    ignored_warnings: list[str] = Field(default_factory=list)
+    commands: list[ExportCommandRecord] = Field(default_factory=list)
+    output_files: dict[str, ArtifactReference] = Field(default_factory=dict)
+    fidelity_report: RenderFidelityReport | None = None
+    hard_penalty: bool = False
+    failure_reason: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class MutationFidelityResult(SlidexModel):
+    """Observable survival of one mutation after the final renderer."""
+
+    mutation_id: str
+    defect_class: DefectClass
+    clean_render_uri: str
+    defective_render_uri: str
+    renderer: RendererInfo
+    pixel_difference: float = Field(ge=0, le=1)
+    perceptual_similarity: float = Field(ge=0, le=1)
+    zero_signal: bool
+    include_in_training: bool
+    label_source: Literal["final_render"] = "final_render"
+
+
 class Provenance(SlidexModel):
     parent_artifact_id: str | None = None
     creation_action: str = Field(min_length=1)

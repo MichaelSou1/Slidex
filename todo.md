@@ -611,50 +611,52 @@ Research -> Design           reset -> step -> reward
 
 # Phase 8：最终导出物验证与 Render Fidelity
 
+> 状态（2026-07-24）：严格 HTML→PPTX、LibreOffice 最终重渲染、多信号 fidelity gate、mutation zero-signal 检测和可追溯 export manifest 已完成。
+
 ## 8.1 Strict HTML → PPTX
 
-- [ ] 将训练/API 默认 `soft_parsing` 改为 `False`。
-- [ ] validation error 转成明确 invalid artifact 和 hard penalty。
-- [ ] soft mode 只能由请求显式开启，并记录所有 ignored warnings。
-- [ ] 将 html2pptx stdout/stderr、版本和命令参数写入 export manifest。
+- [x] 将训练/API 默认 `soft_parsing` 改为 `False`。
+- [x] validation error 转成明确 invalid artifact 和 hard penalty。
+- [x] soft mode 只能由请求显式开启，并记录所有 ignored warnings。
+- [x] 将 html2pptx stdout/stderr、版本和命令参数写入 export manifest。
 
 ## 8.2 PPTX 重新渲染
 
-- [ ] 确定首选 headless renderer（例如 LibreOffice）并检测版本。
-- [ ] 将生成的 PPTX 渲染为 PDF/PNG。
-- [ ] 每页输出稳定命名并关联 source slide ID。
-- [ ] renderer 缺失时返回 capability error，不把 HTML render 冒充 PPTX render。
-- [ ] 可选支持 PowerPoint render worker，但不作为本地必需依赖。
+- [x] 确定首选 headless renderer（例如 LibreOffice）并检测版本。
+- [x] 将生成的 PPTX 渲染为 PDF/PNG。
+- [x] 每页输出稳定命名并关联 source slide ID。
+- [x] renderer 缺失时返回 capability error，不把 HTML render 冒充 PPTX render。
+- [ ] 可选支持 PowerPoint render worker，但不作为本地必需依赖。（可选扩展，不阻塞 Phase 8 验收。）
 
 ## 8.3 Render-fidelity gate
 
-- [ ] 比较 HTML screenshot 与 PPTX re-render 的页面尺寸和页数。
-- [ ] 计算像素差/感知差，但不把单一相似度当质量结论。
-- [ ] 对关键元素比较 OCR/text presence 或可用的导出结构。
-- [ ] 对 G1/G7、margin、missing image 重新检查最终 render。
-- [ ] 检测 PPTX 中字体替换、换行和元素位置变化。
-- [ ] render 差异超过阈值时标记 `export_fidelity_failure`。
+- [x] 比较 HTML screenshot 与 PPTX re-render 的页面尺寸和页数。
+- [x] 计算像素差/感知差，但不把单一相似度当质量结论。
+- [x] 对关键元素比较 OCR/text presence 或可用的导出结构。
+- [x] 对 G1/G7、margin、missing image 重新检查最终 render。
+- [x] 检测 PPTX 中字体替换、换行和元素位置变化。
+- [x] render 差异超过阈值时标记 `export_fidelity_failure`。
 
 ## 8.4 Template snapping / mutation fidelity
 
-- [ ] 对所有注入式训练数据保存 clean 和 defective 最终 render。
-- [ ] 如果最终像素相同，则样本标记 `zero_signal` 并从 detection/reward 训练中排除。
-- [ ] 统计每类 mutation 的 render survival rate。
-- [ ] 标签来自最终可观察 artifact，而不是仅来自 IR mutation 操作。
-- [ ] clean twin 也必须经过同一 renderer 和版本。
+- [x] 对所有注入式训练数据保存 clean 和 defective 最终 render。
+- [x] 如果最终像素相同，则样本标记 `zero_signal` 并从 detection/reward 训练中排除。
+- [x] 统计每类 mutation 的 render survival rate。
+- [x] 标签来自最终可观察 artifact，而不是仅来自 IR mutation 操作。
+- [x] clean twin 也必须经过同一 renderer 和版本。
 
 ## 8.5 最终 artifact 状态
 
-- [ ] 区分 `draft_html_valid`、`pptx_exported`、`pptx_render_validated`。
-- [ ] API 默认只将 `pptx_render_validated` 标为成功终态。
-- [ ] 导出失败时保留 HTML/PDF 调试 artifact，但不得把 PDF fallback 宣称为 PPTX 成功。
-- [ ] `intermediate_output.json` 迁移到更明确的 artifact manifest，同时提供兼容字段。
+- [x] 区分 `draft_html_valid`、`pptx_exported`、`pptx_render_validated`。
+- [x] API 默认只将 `pptx_render_validated` 标为成功终态。
+- [x] 导出失败时保留 HTML/PDF 调试 artifact，但不得把 PDF fallback 宣称为 PPTX 成功。
+- [x] `intermediate_output.json` 迁移到更明确的 artifact manifest，同时提供兼容字段。
 
 ### Phase 8 退出条件
 
-- [ ] reward 和成功状态基于最终交付物，而非仅基于 HTML 草稿。
-- [ ] template snapping/导出重排造成的标签失真可被自动检测。
-- [ ] 任一最终 PPTX 可以追溯到 source、critic report 和 renderer。
+- [x] reward 和成功状态基于最终交付物，而非仅基于 HTML 草稿。
+- [x] template snapping/导出重排造成的标签失真可被自动检测。
+- [x] 任一最终 PPTX 可以追溯到 source、critic report 和 renderer。
 
 ---
 

@@ -72,6 +72,10 @@ slidex:
   command_timeout_seconds: 300
   strict_export: true
   pptx_rerender: true
+  export_max_pixel_difference: 0.12
+  export_min_perceptual_similarity: 0.90
+  export_min_text_presence: 0.95
+  mutation_zero_signal_threshold: 0.001
   reference_policy: "on_defer"
   max_workspace_bytes: 2147483648
   max_artifacts_per_episode: 1000

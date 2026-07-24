@@ -16,8 +16,10 @@ from deeppresenter.slidex.artifacts import ArtifactStore
 from deeppresenter.slidex.browser import BrowserObserver, extract_declared_ir
 from deeppresenter.slidex.critic import HybridCritic, persist_report
 from deeppresenter.slidex.deck import DeckInspector, enforce_export_gate
+from deeppresenter.slidex.export import FinalExportService, RenderFidelityValidator
 from deeppresenter.slidex.models import (
     InspectionContext,
+    FinalArtifactStatus,
     RepairAction,
     Provenance,
     RenderArtifact,
@@ -35,9 +37,9 @@ from deeppresenter.slidex.repair import (
 from deeppresenter.tools.filesystem import WorkspaceTools
 from deeppresenter.utils.config import DeepPresenterConfig
 from deeppresenter.utils.constants import WORKSPACE_BASE
-from deeppresenter.utils.log import debug, error, set_logger, timer, warning
+from deeppresenter.utils.log import debug, error, set_logger, timer
 from deeppresenter.utils.typings import ChatMessage, ConvertType, InputRequest, Role
-from deeppresenter.utils.webview import PlaywrightConverter, convert_html_to_pptx
+from deeppresenter.utils.webview import convert_html_to_pptx
 
 
 class AgentLoop:
@@ -67,13 +69,13 @@ class AgentLoop:
         self,
         request: InputRequest,
         check_llms: bool = False,
-        soft_parsing: bool = True,
+        soft_parsing: bool = False,
     ) -> AsyncGenerator[str | ChatMessage, None]:
         """Main loop for DeepPresenter generation process.
         Arguments:
             request: InputRequest object containing task details.
             check_llms: Whether to check LLM availability before running.
-            soft_parsing: Whether to use soft parsing on html2pptx.
+            soft_parsing: Explicitly enable warning-ignoring html2pptx soft mode.
         Yields:
             ChatMessage or final output path (str). Outline path stored in intermediate_output["outline"].
         """
@@ -499,30 +501,51 @@ class AgentLoop:
                 self.intermediate_output["deck_inspection"] = deck_report_path
                 enforce_export_gate(deck_report)
                 pptx_path = self.workspace / f"{md_file.stem}.pptx"
-                try:
-                    # ? this feature is in experimental stage
-                    await convert_html_to_pptx(
-                        slide_html_dir,
-                        pptx_path,
-                        aspect_ratio=request.powerpoint_type.value,
-                        soft_parsing=soft_parsing,
+                source_paths = sorted(slide_html_dir.glob("slide_*.html"))
+                html_renders = [
+                    self.workspace
+                    / ".history"
+                    / "observations"
+                    / source.stem
+                    / "render.png"
+                    for source in source_paths
+                ]
+                export_service = FinalExportService(
+                    validator=RenderFidelityValidator(
+                        max_pixel_difference=self.config.slidex.export_max_pixel_difference,
+                        min_perceptual_similarity=self.config.slidex.export_min_perceptual_similarity,
+                        min_text_presence=self.config.slidex.export_min_text_presence,
+                        zero_signal_threshold=self.config.slidex.mutation_zero_signal_threshold,
                     )
-                except Exception as e:
-                    warning(
-                        f"html2pptx conversion failed, falling back to pdf conversion\n{e}"
-                    )
-                    pptx_path = pptx_path.with_suffix(".pdf")
-                    (self.workspace / ".html2pptx-error.txt").write_text(
-                        str(e) + "\n" + traceback.format_exc()
-                    )
-                finally:
-                    async with PlaywrightConverter() as pc:
-                        await pc.convert_to_pdf(
-                            list(slide_html_dir.glob("*.html")),
-                            pptx_path.with_suffix(".pdf"),
-                            aspect_ratio=request.powerpoint_type.value,
+                )
+                export_manifest = await export_service.export(
+                    source_paths,
+                    pptx_path,
+                    html_renders,
+                    aspect_ratio=request.powerpoint_type.value,
+                    soft_mode=soft_parsing,
+                    soft_mode_explicit=soft_parsing,
+                    source_artifact_ids=[
+                        inspected_artifacts[source.stem].artifact_id
+                        for source in source_paths
+                    ],
+                    critic_report_uris=[deck_report_path.resolve().as_uri()],
+                )
+                export_manifest_path = (
+                    self.workspace / ".history" / "slidex" / "export_manifest.json"
+                )
+                export_service.save_manifest(export_manifest, export_manifest_path)
+                self.intermediate_output["artifact_manifest"] = export_manifest_path
+                self.intermediate_output["export_status"] = export_manifest.status.value
+                if export_manifest.status != FinalArtifactStatus.PPTX_RENDER_VALIDATED:
+                    raise RuntimeError(
+                        "final PPTX validation failed: "
+                        + (
+                            export_manifest.failure_reason
+                            or export_manifest.status.value
                         )
-
+                    )
+                self.intermediate_output["pptx"] = str(pptx_path)
                 self.intermediate_output["final"] = str(pptx_path)
                 msg = pptx_path
             self.save_results()

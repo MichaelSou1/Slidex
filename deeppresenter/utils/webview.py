@@ -1,10 +1,13 @@
 import asyncio
+import json
 import tempfile
+import time
+from dataclasses import dataclass
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from fake_useragent import UserAgent
 from pdf2image import convert_from_path
@@ -17,6 +20,8 @@ from playwright.async_api import (
 )
 from pypdf import PdfWriter
 
+if TYPE_CHECKING:
+    from deeppresenter.slidex.models import ExportCommandRecord
 from deeppresenter.utils.constants import PACKAGE_DIR, PDF_OPTIONS
 from deeppresenter.utils.log import debug, error
 
@@ -166,12 +171,38 @@ class PlaywrightConverter:
         return folder
 
 
+@dataclass(frozen=True)
+class Html2PptxResult:
+    """Captured conversion process metadata for replay and soft-mode auditing."""
+
+    output_path: Path | None
+    command: "ExportCommandRecord"
+    ignored_warnings: list[str]
+
+
+class Html2PptxError(RuntimeError):
+    """Strict conversion failure retaining the complete command record."""
+
+    def __init__(self, message: str, command: "ExportCommandRecord") -> None:
+        super().__init__(message)
+        self.command = command
+
+
+def _html2pptx_version() -> str:
+    package = SCRIPT_PATH.parent / "package.json"
+    package_version = json.loads(package.read_text()).get("version", "unknown")
+    process = __import__("subprocess").run(
+        ["node", "--version"], capture_output=True, text=True, check=False
+    )
+    return f"html2pptx/{package_version}; node/{process.stdout.strip() or 'unknown'}"
+
+
 async def convert_html_to_pptx(
     html_inputs: Path | str | Iterable[Path | str],
     output_pptx: Path | str | None = None,
     aspect_ratio: Literal["16:9", "4:3", "A1", "A2", "A3", "A4"] = "16:9",
     soft_parsing: bool = False,
-):
+) -> Html2PptxResult:
     if not SCRIPT_PATH.exists():
         raise FileNotFoundError(f"html2pptx CLI not found at {SCRIPT_PATH}")
 
@@ -219,18 +250,45 @@ async def convert_html_to_pptx(
     if soft_parsing:
         cmd.append("--soft")
 
+    started = time.perf_counter()
     process = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(SCRIPT_PATH.parent),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await process.communicate()
+    stdout_bytes, stderr_bytes = await process.communicate()
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    from deeppresenter.slidex.models import ExportCommandRecord
+
+    command = ExportCommandRecord(
+        executable=cmd[0],
+        arguments=cmd[1:],
+        version=_html2pptx_version(),
+        return_code=process.returncode or 0,
+        stdout=stdout,
+        stderr=stderr,
+        duration_ms=(time.perf_counter() - started) * 1000,
+    )
+    ignored_warnings = [
+        line.strip()
+        for line in (stdout + "\n" + stderr).splitlines()
+        if "[SOFT MODE]" in line
+        or line.strip().startswith(tuple(f"{index}." for index in range(1, 100)))
+    ]
     if process.returncode != 0:
-        details = (stderr or stdout or b"").decode("utf-8", errors="replace").strip()
+        details = (stderr or stdout).strip()
         if "Cannot find module" in details:
-            raise RuntimeError("html2pptx Node dependencies are missing. ")
-        raise RuntimeError(f"html2pptx failed: {details.split('at html2pptx (')[0]}")
+            details = "html2pptx Node dependencies are missing"
+        raise Html2PptxError(
+            f"html2pptx failed: {details.split('at html2pptx (')[0]}", command
+        )
+    return Html2PptxResult(
+        output_path=output_path,
+        command=command,
+        ignored_warnings=ignored_warnings,
+    )
 
 
 @asynccontextmanager

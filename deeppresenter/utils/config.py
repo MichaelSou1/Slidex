@@ -10,7 +10,14 @@ import yaml
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 from openai.types.images_response import ImagesResponse
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    model_validator,
+)
 
 from deeppresenter.utils.constants import (
     CONTEXT_LENGTH_LIMIT,
@@ -402,6 +409,10 @@ class SlidexConfig(BaseModel):
     command_timeout_seconds: int = Field(default=300, gt=0)
     strict_export: bool = True
     pptx_rerender: bool = True
+    export_max_pixel_difference: float = Field(default=0.12, ge=0, le=1)
+    export_min_perceptual_similarity: float = Field(default=0.90, ge=0, le=1)
+    export_min_text_presence: float = Field(default=0.95, ge=0, le=1)
+    mutation_zero_signal_threshold: float = Field(default=0.001, ge=0, le=1)
     reference_policy: Literal["never", "on_defer", "always"] = "on_defer"
     max_workspace_bytes: int = Field(default=2 * 1024**3, gt=0)
     max_artifacts_per_episode: int = Field(default=1000, gt=0)
