@@ -60,6 +60,9 @@ slidex:
   alignment_tolerance_px: 2
   overlap_tolerance_px: 1
   palette_threshold: 0.1
+  overlap_min_area_px: 4
+  color_delta_e_threshold: 5
+  typography_tolerance_px: 1
   max_repair_rounds: 3
   max_episode_steps: 20
   command_timeout_seconds: 300

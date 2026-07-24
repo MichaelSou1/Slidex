@@ -1,3 +1,4 @@
+import hashlib
 import json
 import traceback
 import uuid
@@ -11,6 +12,14 @@ from deeppresenter.agents.planner import Planner
 from deeppresenter.agents.pptagent import PPTAgent
 from deeppresenter.agents.research import Research
 from deeppresenter.agents.subagent import SubAgent
+from deeppresenter.slidex.artifacts import ArtifactStore
+from deeppresenter.slidex.browser import BrowserObserver, extract_declared_ir
+from deeppresenter.slidex.models import (
+    Provenance,
+    RenderArtifact,
+    RendererInfo,
+    SlideArtifact,
+)
 from deeppresenter.tools.filesystem import WorkspaceTools
 from deeppresenter.utils.config import DeepPresenterConfig
 from deeppresenter.utils.constants import WORKSPACE_BASE
@@ -92,7 +101,89 @@ class AgentLoop:
                 """Strictly validate a workspace HTML slide before export."""
                 html_path = WorkspaceTools(self.workspace)._resolve(html_file)
                 await convert_html_to_pptx(html_path, aspect_ratio=aspect_ratio)
-                return "This slide is valid."
+                observation_dir = (
+                    self.workspace / ".history" / "observations" / html_path.stem
+                )
+                observation = await BrowserObserver().observe(
+                    html_path,
+                    observation_dir,
+                    slide_id=html_path.stem,
+                    debug_overlay=True,
+                )
+                declared = extract_declared_ir(
+                    html_path,
+                    slide_id=html_path.stem,
+                    global_css=html_path.parent / "global.css"
+                    if (html_path.parent / "global.css").exists()
+                    else None,
+                )
+                declared_path = observation_dir / "declared_ir.json"
+                computed_path = observation_dir / "computed_ir.json"
+                declared_path.write_text(declared.model_dump_json(indent=2))
+                computed_path.write_text(
+                    observation.computed_ir.model_dump_json(indent=2)
+                )
+                if not observation.computed_ir.render_ready:
+                    raise RuntimeError(
+                        f"Slide render is not ready: {observation.computed_ir.resource_errors + observation.computed_ir.page_errors}"
+                    )
+
+                store = ArtifactStore(
+                    self.workspace / ".history" / "slidex",
+                    max_workspace_bytes=self.config.slidex.max_workspace_bytes,
+                    max_artifacts=self.config.slidex.max_artifacts_per_episode,
+                )
+                episode = store.create_episode(
+                    versions={"taxonomy": self.config.slidex.taxonomy_version}
+                )
+                source = html_path.read_bytes()
+                renderer = RendererInfo(
+                    name=observation.computed_ir.browser,
+                    version=observation.computed_ir.browser_version,
+                    options={
+                        "viewport": [
+                            observation.computed_ir.page_width,
+                            observation.computed_ir.page_height,
+                        ]
+                    },
+                )
+                provenance = Provenance(
+                    creation_action="inspect_slide",
+                    versions={"taxonomy": self.config.slidex.taxonomy_version},
+                )
+                slide_artifact = SlideArtifact(
+                    artifact_id="pending",
+                    source_uri=f"source/{html_path.name}",
+                    source_sha256=hashlib.sha256(source).hexdigest(),
+                    declared_ir=declared,
+                    computed_ir=observation.computed_ir,
+                    renders=[
+                        RenderArtifact(
+                            kind="html",
+                            uri="renders/render.png",
+                            sha256=hashlib.sha256(
+                                observation.screenshot_path.read_bytes()
+                            ).hexdigest(),
+                            width=int(observation.computed_ir.page_width),
+                            height=int(observation.computed_ir.page_height),
+                            renderer=renderer,
+                        )
+                    ],
+                    provenance=provenance,
+                )
+                files: dict[str, Path] = {
+                    f"source/{html_path.name}": html_path,
+                    "ir/declared.json": declared_path,
+                    "ir/computed.json": computed_path,
+                    "renders/render.png": observation.screenshot_path,
+                    "renders/render.pdf": observation.pdf_path,
+                }
+                if observation.overlay_path:
+                    files["renders/overlay.png"] = observation.overlay_path
+                manifest = store.write_artifact(
+                    episode.episode_id, files, provenance, slide_artifact
+                )
+                return f"This slide is valid. Browser evidence: artifact://{episode.episode_id}/{manifest.artifact_id}."
 
             agent_env.register_tool(inspect_slide)
             hello_message = f"DeepPresenter running in {self.workspace}, with {len(request.attachments)} attachments, prompt={request.instruction}"

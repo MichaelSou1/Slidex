@@ -65,7 +65,10 @@ class BoundingBox(SlidexModel):
 
     @model_validator(mode="after")
     def validate_bounds(self) -> BoundingBox:
-        if self.x + self.width > self.page_width or self.y + self.height > self.page_height:
+        if (
+            self.x + self.width > self.page_width
+            or self.y + self.height > self.page_height
+        ):
             raise ValueError("bounding box exceeds page bounds")
         return self
 
@@ -102,13 +105,34 @@ class DeclaredSlideIR(SlidexModel):
         return self
 
 
+class ObservedBoundingBox(SlidexModel):
+    """A browser-observed box which may extend beyond the slide viewport."""
+
+    x: float
+    y: float
+    width: float = Field(ge=0)
+    height: float = Field(ge=0)
+    page_width: float = Field(gt=0)
+    page_height: float = Field(gt=0)
+    unit: Literal["px"] = "px"
+    coordinate_system: Literal["top_left"] = "top_left"
+
+
 class ComputedSlideElement(SlideElement):
+    bbox: ObservedBoundingBox | None = None
     computed_style: dict[str, str] = Field(default_factory=dict)
+    client_width: float = Field(ge=0, default=0)
+    client_height: float = Field(ge=0, default=0)
     scroll_width: float = Field(ge=0, default=0)
     scroll_height: float = Field(ge=0, default=0)
+    text_bboxes: list[ObservedBoundingBox] = Field(default_factory=list)
+    visible_bbox: ObservedBoundingBox | None = None
     visible: bool = True
+    partially_outside_page: bool = False
+    clipped: bool = False
     stacking_order: int = 0
     font_fallback: list[str] = Field(default_factory=list)
+    image: dict[str, Any] = Field(default_factory=dict)
 
 
 class ComputedSlideIR(SlidexModel):
@@ -120,6 +144,10 @@ class ComputedSlideIR(SlidexModel):
     browser: str
     browser_version: str
     warnings: list[str] = Field(default_factory=list)
+    console_errors: list[str] = Field(default_factory=list)
+    page_errors: list[str] = Field(default_factory=list)
+    resource_errors: list[str] = Field(default_factory=list)
+    render_ready: bool = True
 
     @model_validator(mode="after")
     def validate_elements(self) -> ComputedSlideIR:
@@ -169,6 +197,15 @@ class SlideArtifact(SlidexModel):
         return self
 
 
+class RepairHint(SlidexModel):
+    """Machine-readable repair operation emitted by deterministic inspectors."""
+
+    action: str = Field(min_length=1)
+    targets: list[str] = Field(default_factory=list)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    explanation: str | None = None
+
+
 class Evidence(SlidexModel):
     source: EvidenceSource
     detail: str = Field(min_length=1)
@@ -183,7 +220,9 @@ class InspectionResult(SlidexModel):
     confidence: float = Field(ge=0, le=1)
     evidence: list[Evidence] = Field(default_factory=list)
     element_ids: list[str] = Field(default_factory=list)
-    repair_hint: str | None = None
+    repair_hint: RepairHint | str | None = None
+    inspector_name: str | None = None
+    input_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     latency_ms: float = Field(ge=0, default=0)
     cost: float = Field(ge=0, default=0)
     inspector_version: str = Field(min_length=1)

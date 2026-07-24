@@ -277,50 +277,50 @@ Research -> Design           reset -> step -> reward
 
 ## 3.1 Source/declared IR 提取
 
-- [ ] 从 HTML 提取 `data-slidex-id`、semantic role、容器关系、文本和资源引用。
-- [ ] 从 `global.css` 和页面 style 提取设计 token：字体 scale、palette、safe area 和 grid hints。
-- [ ] 明确 declared IR 是生成管线拥有的源结构，不使用像素 layout detector 替代。
-- [ ] 对动态脚本、远程字体和交互依赖默认禁止或标记为不可复现。
-- [ ] 对没有 declared semantic role 的元素标记 `unknown`，不猜测为 ground truth。
+- [x] 从 HTML 提取 `data-slidex-id`、semantic role、容器关系、文本和资源引用。
+- [x] 从 `global.css` 和页面 style 提取设计 token：字体 scale、palette、safe area 和 grid hints。
+- [x] 明确 declared IR 是生成管线拥有的源结构，不使用像素 layout detector 替代。
+- [x] 对动态脚本、远程字体和交互依赖默认禁止或标记为不可复现。
+- [x] 对没有 declared semantic role 的元素标记 `unknown`，不猜测为 ground truth。
 
 ## 3.2 Playwright computed IR
 
-- [ ] 重构 `PlaywrightConverter`，允许一次 page load 同时生成 DOM snapshot、截图和 PDF。
-- [ ] 获取每个元素的 `getBoundingClientRect()`。
-- [ ] 获取 `clientWidth/clientHeight`、`scrollWidth/scrollHeight`。
-- [ ] 获取 text node range bounding rects，支持文本真实占用范围检测。
-- [ ] 获取关键 computed styles：font family/size/weight、color、background、overflow、display、visibility、opacity、z-index、transform。
-- [ ] 获取实际使用字体/字体 fallback；复用 html2pptx 已有 CDP font detection 思路。
-- [ ] 获取图片 natural size、object-fit、clip 和 load status。
-- [ ] 获取元素可见区域和页面交集，识别完全/部分出界。
-- [ ] 等待 `document.fonts.ready`、图片加载和网络空闲后再采样。
-- [ ] 固定 viewport、device scale factor、locale、timezone 和 browser flags，减少 reward 漂移。
-- [ ] 将 JS console error、page error 和资源加载失败写入 artifact。
+- [x] 重构 `PlaywrightConverter`，允许一次 page load 同时生成 DOM snapshot、截图和 PDF。
+- [x] 获取每个元素的 `getBoundingClientRect()`。
+- [x] 获取 `clientWidth/clientHeight`、`scrollWidth/scrollHeight`。
+- [x] 获取 text node range bounding rects，支持文本真实占用范围检测。
+- [x] 获取关键 computed styles：font family/size/weight、color、background、overflow、display、visibility、opacity、z-index、transform。
+- [x] 获取实际使用字体/字体 fallback；复用 html2pptx 已有 CDP font detection 思路。
+- [x] 获取图片 natural size、object-fit、clip 和 load status。
+- [x] 获取元素可见区域和页面交集，识别完全/部分出界。
+- [x] 等待 `document.fonts.ready`、图片加载和网络空闲后再采样。
+- [x] 固定 viewport、device scale factor、locale、timezone 和 browser flags，减少 reward 漂移。
+- [x] 将 JS console error、page error 和资源加载失败写入 artifact。
 
 ## 3.3 DOM 与 render 一致性
 
-- [ ] 在 screenshot 上支持绘制 debug overlay，标出 element ID 和 bbox。
-- [ ] 检查 CSS transform 后 bbox 与 source geometry 的差异。
-- [ ] 检查 clipping、pseudo-element、shadow 和 SVG 等无法完整表达在 declared IR 中的内容。
-- [ ] 记录每页 render readiness；未加载完成的页面不得进入 critic。
-- [ ] 将当前 `inspect_slide` 的临时目录行为改为 artifact store 管理，避免无法回放。
+- [x] 在 screenshot 上支持绘制 debug overlay，标出 element ID 和 bbox。
+- [x] 检查 CSS transform 后 bbox 与 source geometry 的差异。
+- [x] 检查 clipping、pseudo-element、shadow 和 SVG 等无法完整表达在 declared IR 中的内容。
+- [x] 记录每页 render readiness；未加载完成的页面不得进入 critic。
+- [x] 将当前 `inspect_slide` 的临时目录行为改为 artifact store 管理，避免无法回放。
 
 ## 3.4 浏览器观测测试
 
-- [ ] fixture：正常文本框，验证 client/scroll 相等。
-- [ ] fixture：文本 overflow，验证 scroll dimension 超出。
-- [ ] fixture：hidden overflow，验证内容超出但像素被裁剪。
-- [ ] fixture：absolute positioned child 越过 container。
-- [ ] fixture：页面边界和 safe margin 违规。
-- [ ] fixture：transform、pseudo-element 和 SVG。
-- [ ] fixture：字体 fallback 导致换行变化。
-- [ ] 同一 fixture 连续运行多次，确认 IR 和 reward 输入稳定。
+- [x] fixture：正常文本框，验证 client/scroll 相等。
+- [x] fixture：文本 overflow，验证 scroll dimension 超出。
+- [x] fixture：hidden overflow，验证内容超出但像素被裁剪。
+- [x] fixture：absolute positioned child 越过 container。
+- [x] fixture：页面边界和 safe margin 违规。
+- [x] fixture：transform、pseudo-element 和 SVG。
+- [x] fixture：字体 fallback 导致换行变化。
+- [x] 同一 fixture 连续运行多次，确认 IR 和 reward 输入稳定。
 
 ### Phase 3 退出条件
 
-- [ ] 单次浏览器加载可产出 computed IR、PNG 和 PDF。
-- [ ] G2/G6/G7 所需几何证据无需 VLM 即可取得。
-- [ ] 所有证据可定位到稳定 element ID。
+- [x] 单次浏览器加载可产出 computed IR、PNG 和 PDF。
+- [x] G2/G6/G7 所需几何证据无需 VLM 即可取得。
+- [x] 所有证据可定位到稳定 element ID。
 
 ---
 
@@ -328,83 +328,83 @@ Research -> Design           reset -> step -> reward
 
 ## 4.1 G2 元素重叠
 
-- [ ] 基于 computed/native bbox 计算 pairwise intersection。
-- [ ] 区分预期重叠与异常重叠：背景、装饰、容器子元素、overlay allowlist。
-- [ ] 使用面积比例和最小像素阈值过滤抗锯齿级误差。
-- [ ] 输出两个 element ID、intersection bbox、面积和严重度。
-- [ ] clean fixtures 必须零误报。
+- [x] 基于 computed/native bbox 计算 pairwise intersection。
+- [x] 区分预期重叠与异常重叠：背景、装饰、容器子元素、overlay allowlist。
+- [x] 使用面积比例和最小像素阈值过滤抗锯齿级误差。
+- [x] 输出两个 element ID、intersection bbox、面积和严重度。
+- [x] clean fixtures 必须零误报。
 
 ## 4.2 G3 alignment offset
 
-- [ ] 提取 left/right/center/top/bottom alignment candidates。
-- [ ] 对重复列、卡片和文本基线进行 clustering。
-- [ ] 使用配置化 tolerance，不将所有自由布局强制吸附到统一 grid。
-- [ ] 只有存在足够 sibling evidence 时才判定 fail，否则 `not_applicable` 或 `defer`。
-- [ ] 输出偏移方向、像素值、参考元素集合和 repair target。
+- [x] 提取 left/right/center/top/bottom alignment candidates。
+- [x] 对重复列、卡片和文本基线进行 clustering。
+- [x] 使用配置化 tolerance，不将所有自由布局强制吸附到统一 grid。
+- [x] 只有存在足够 sibling evidence 时才判定 fail，否则 `not_applicable` 或 `defer`。
+- [x] 输出偏移方向、像素值、参考元素集合和 repair target。
 
 ## 4.3 G4 font-size inconsistency
 
-- [ ] 建立 deck typography scale，而不是单页孤立阈值。
-- [ ] 按 semantic role 比较 title/subtitle/body/caption/footer。
-- [ ] 识别同角色的异常字号、字体和 weight。
-- [ ] 对 intentional emphasis 使用 role/attribute allowlist。
-- [ ] 输出 expected scale、actual value 和相关页面。
+- [x] 建立 deck typography scale，而不是单页孤立阈值。
+- [x] 按 semantic role 比较 title/subtitle/body/caption/footer。
+- [x] 识别同角色的异常字号、字体和 weight。
+- [x] 对 intentional emphasis 使用 role/attribute allowlist。
+- [x] 输出 expected scale、actual value 和相关页面。
 
 ## 4.4 G5 brand-color violation
 
-- [ ] 从 `global.css` / theme 配置读取可信 palette。
-- [ ] 将 CSS colors 规范化到统一色彩空间。
-- [ ] 使用 CIEDE2000，而不是 RGB 欧氏距离。
-- [ ] 分开处理文本色、背景色、边框色和装饰色。
-- [ ] 透明度合成后再判断最终可见颜色。
-- [ ] 输出最近 palette color、Delta E 和修改建议。
+- [x] 从 `global.css` / theme 配置读取可信 palette。
+- [x] 将 CSS colors 规范化到统一色彩空间。
+- [x] 使用 CIEDE2000，而不是 RGB 欧氏距离。
+- [x] 分开处理文本色、背景色、边框色和装饰色。
+- [x] 透明度合成后再判断最终可见颜色。
+- [x] 输出最近 palette color、Delta E 和修改建议。
 
 ## 4.5 G6 margin violation
 
-- [ ] 按 aspect ratio 定义 safe area。
-- [ ] 检查可见 bbox，而非仅 CSS 声明值。
-- [ ] 背景 bleed 和装饰性 full-bleed 元素可显式豁免。
-- [ ] 输出越界边、距离和允许边界。
-- [ ] 对 poster 与 presentation 使用独立默认阈值。
+- [x] 按 aspect ratio 定义 safe area。
+- [x] 检查可见 bbox，而非仅 CSS 声明值。
+- [x] 背景 bleed 和装饰性 full-bleed 元素可显式豁免。
+- [x] 输出越界边、距离和允许边界。
+- [x] 对 poster 与 presentation 使用独立默认阈值。
 
 ## 4.6 S3 terminology inconsistency
 
-- [ ] 从 deck 全文建立 occurrence table：term、slide、element、context。
-- [ ] 先做确定性 normalization：大小写、全半角、连字符、复数和空白。
-- [ ] 使用近重复聚类发现 subtle variants，但保留可解释 edit evidence。
-- [ ] 允许用户提供 glossary 和 accepted aliases。
-- [ ] 只输出候选冲突，不自动把所有近义词视为错误。
-- [ ] 输出 canonical suggestion、所有 occurrences 和修改目标。
+- [x] 从 deck 全文建立 occurrence table：term、slide、element、context。
+- [x] 先做确定性 normalization：大小写、全半角、连字符、复数和空白。
+- [x] 使用近重复聚类发现 subtle variants，但保留可解释 edit evidence。
+- [x] 允许用户提供 glossary 和 accepted aliases。
+- [x] 只输出候选冲突，不自动把所有近义词视为错误。
+- [x] 输出 canonical suggestion、所有 occurrences 和修改目标。
 
 ## 4.7 G1 与 G7 的工程化区分
 
-- [ ] G1 定义为 declared text/container 约束违规；在 Slidex 源结构中可判定的部分走 symbolic。
-- [ ] G7 定义为 declared container 合法、但 computed/rendered content 越界。
-- [ ] 使用 scroll metrics、text ranges 和 child union 检测 DOM-level G7。
-- [ ] 对 DOM 无法解释的 pixel-only anomaly 标记为 unresolved，交给 atomic render inspector。
-- [ ] 不因为 Slidex 可直接检测 DOM overflow 就删除论文中的 render-gap 概念；必须保留 export 后再次检查。
+- [x] G1 定义为 declared text/container 约束违规；在 Slidex 源结构中可判定的部分走 symbolic。
+- [x] G7 定义为 declared container 合法、但 computed/rendered content 越界。
+- [x] 使用 scroll metrics、text ranges 和 child union 检测 DOM-level G7。
+- [x] 对 DOM 无法解释的 pixel-only anomaly 标记为 unresolved，交给 atomic render inspector。
+- [x] 不因为 Slidex 可直接检测 DOM overflow 就删除论文中的 render-gap 概念；必须保留 export 后再次检查。
 
 ## 4.8 统一 linter 输出
 
-- [ ] 所有 linters 实现统一 `Inspector` protocol。
-- [ ] 所有结果必须使用 `InspectionResult`，禁止返回自由文本字典。
-- [ ] 每个 inspector 记录名称、版本、输入 hash 和耗时。
-- [ ] checker 抛出的内部异常转换为 `error`，不能伪装成 `pass`。
-- [ ] 无足够证据时返回 `defer/not_applicable`，不能用默认阈值硬判。
+- [x] 所有 linters 实现统一 `Inspector` protocol。
+- [x] 所有结果必须使用 `InspectionResult`，禁止返回自由文本字典。
+- [x] 每个 inspector 记录名称、版本、输入 hash 和耗时。
+- [x] checker 抛出的内部异常转换为 `error`，不能伪装成 `pass`。
+- [x] 无足够证据时返回 `defer/not_applicable`，不能用默认阈值硬判。
 
 ## 4.9 Linter 测试
 
-- [ ] 每个 class 至少准备 clean/defective matched pair。
-- [ ] 检查 defective 触发且 clean 静默，避免“全报错”获得高 recall。
-- [ ] 测试阈值边界和 magnitude sweep。
-- [ ] 测试真实自由布局，避免 checker 只适合合成网格。
-- [ ] 对 clean suite 设定零误报或明确可接受上限。
+- [x] 每个 class 至少准备 clean/defective matched pair。
+- [x] 检查 defective 触发且 clean 静默，避免“全报错”获得高 recall。
+- [x] 测试阈值边界和 magnitude sweep。
+- [x] 测试真实自由布局，避免 checker 只适合合成网格。
+- [x] 对 clean suite 设定零误报或明确可接受上限。
 
 ### Phase 4 退出条件
 
-- [ ] G2–G6 和 S3 可在无模型环境运行。
-- [ ] G1/G7 的 declared/computed/render 边界被显式记录。
-- [ ] 每个 fail 都能定位元素并给出机器可读 repair hint。
+- [x] G2–G6 和 S3 可在无模型环境运行。
+- [x] G1/G7 的 declared/computed/render 边界被显式记录。
+- [x] 每个 fail 都能定位元素并给出机器可读 repair hint。
 
 ---
 
