@@ -35,6 +35,34 @@ class DefectClass(StrEnum):
     S6 = "S6"
 
 
+class RepairOperation(StrEnum):
+    """Supported source-level repair operations."""
+
+    MOVE_ELEMENT = "move_element"
+    RESIZE_CONTAINER = "resize_container"
+    REDUCE_TEXT = "reduce_text"
+    CHANGE_FONT_SIZE = "change_font_size"
+    REPLACE_COLOR = "replace_color"
+    RENAME_TERM = "rename_term"
+    POLICY_EDIT = "policy_edit"
+
+
+class RepairExecutionStatus(StrEnum):
+    APPLIED = "applied"
+    SUGGESTED = "suggested"
+    REJECTED = "rejected"
+
+
+class PolicyViolationCode(StrEnum):
+    HIDDEN_CONTENT = "hidden_content"
+    OFFSCREEN_CONTENT = "offscreen_content"
+    ZERO_SIZE_CONTENT = "zero_size_content"
+    TEXT_AS_IMAGE = "text_as_image"
+    TINY_TEXT = "tiny_text"
+    EXEMPTION_ABUSE = "exemption_abuse"
+    REQUIRED_CONTENT_REMOVED = "required_content_removed"
+
+
 class InspectionStatus(StrEnum):
     PASS = "pass"
     FAIL = "fail"
@@ -206,6 +234,40 @@ class SlideArtifact(SlidexModel):
         return self
 
 
+class DefectTransition(SlidexModel):
+    """Before/after state for one defect class across a repair."""
+
+    defect_class: DefectClass
+    before: InspectionStatus
+    after: InspectionStatus
+    transition: Literal["improved", "unchanged", "worsened"]
+
+
+class RepairAction(SlidexModel):
+    """Auditable proposal or execution of one localized source edit."""
+
+    action_id: str = Field(min_length=1)
+    operation: RepairOperation
+    target_ids: list[str] = Field(min_length=1)
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    source_inspection_ids: list[str] = Field(min_length=1)
+    before_artifact_id: str = Field(min_length=1)
+    after_artifact_id: str | None = None
+    status: RepairExecutionStatus = RepairExecutionStatus.SUGGESTED
+    policy_reason: str | None = None
+    defect_delta: list[DefectTransition] = Field(default_factory=list)
+
+
+class PolicyViolation(SlidexModel):
+    """A hard anti-reward-hacking finding."""
+
+    code: PolicyViolationCode
+    slide_id: str
+    element_ids: list[str] = Field(default_factory=list)
+    detail: str = Field(min_length=1)
+    severity: float = Field(default=1, ge=0, le=1)
+
+
 class RepairHint(SlidexModel):
     """Machine-readable repair operation emitted by deterministic inspectors."""
 
@@ -260,6 +322,22 @@ class InspectionReport(SlidexModel):
     resolved_status: dict[DefectClass, InspectionStatus] = Field(default_factory=dict)
     capability_limits: list[str] = Field(default_factory=list)
     report_uri: str | None = None
+    policy_violations: list[PolicyViolation] = Field(default_factory=list)
+
+
+class DeckInspectionReport(SlidexModel):
+    """Final deck gate with page-local and cross-page findings."""
+
+    deck_id: str = Field(min_length=1)
+    page_reports: dict[str, InspectionReport] = Field(default_factory=dict)
+    deck_results: list[InspectionResult] = Field(default_factory=list)
+    affected_slide_ids: list[str] = Field(default_factory=list)
+    policy_violations: list[PolicyViolation] = Field(default_factory=list)
+    hard_failures: int = Field(ge=0)
+    export_allowed: bool
+    override_reason: str | None = None
+    taxonomy_version: str
+    router_version: str
 
 
 class RewardBreakdown(SlidexModel):

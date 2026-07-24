@@ -15,12 +15,22 @@ from deeppresenter.agents.subagent import SubAgent
 from deeppresenter.slidex.artifacts import ArtifactStore
 from deeppresenter.slidex.browser import BrowserObserver, extract_declared_ir
 from deeppresenter.slidex.critic import HybridCritic, persist_report
+from deeppresenter.slidex.deck import DeckInspector, enforce_export_gate
 from deeppresenter.slidex.models import (
     InspectionContext,
+    RepairAction,
     Provenance,
     RenderArtifact,
     RendererInfo,
     SlideArtifact,
+)
+from deeppresenter.slidex.repair import (
+    DeterministicRepairer,
+    actions_from_report,
+    append_repair_trajectory,
+    bind_after_artifact,
+    compare_reports,
+    detect_policy_violations,
 )
 from deeppresenter.tools.filesystem import WorkspaceTools
 from deeppresenter.utils.config import DeepPresenterConfig
@@ -96,12 +106,34 @@ class AgentLoop:
                 agent_env._tool_to_server.pop("inspect_slide", None)
                 agent_env._tools_dict.pop("inspect_slide", None)
 
+            inspected_artifacts: dict[str, SlideArtifact] = {}
+            inspection_reports = {}
+            inspection_rounds: dict[str, int] = {}
+            pending_repairs: dict[str, list[RepairAction]] = {}
+            latest_artifact_ids: dict[str, str] = {}
+            latest_source_hashes: dict[str, str] = {}
+
             async def inspect_slide(
                 html_file: str,
                 aspect_ratio: Literal["16:9", "4:3", "A1", "A2", "A3", "A4"] = "16:9",
             ) -> str:
-                """Strictly validate a workspace HTML slide before export."""
+                """Inspect one revision; every source repair requires this fresh check."""
                 html_path = WorkspaceTools(self.workspace)._resolve(html_file)
+                key = str(html_path)
+                rounds = inspection_rounds.get(key, 0)
+                if rounds > self.config.slidex.max_repair_rounds:
+                    prior = inspection_reports.get(key)
+                    if prior is None:
+                        raise RuntimeError(
+                            "repair budget exhausted before initial inspection"
+                        )
+                    payload = prior.model_dump()
+                    payload["summary"]["terminal_reason"] = "max_repair_rounds"
+                    payload["summary"]["repair_rounds"] = rounds - 1
+                    return json.dumps(
+                        payload, ensure_ascii=False, indent=2, default=str
+                    )
+                inspection_rounds[key] = rounds + 1
                 await convert_html_to_pptx(html_path, aspect_ratio=aspect_ratio)
                 observation_dir = (
                     self.workspace / ".history" / "observations" / html_path.stem
@@ -157,9 +189,7 @@ class AgentLoop:
                     },
                 )
                 provenance = Provenance(
-                    parent_artifact_id=getattr(
-                        inspect_slide, "previous_artifact_id", None
-                    ),
+                    parent_artifact_id=latest_artifact_ids.get(key),
                     creation_action="inspect_slide",
                     versions={"taxonomy": self.config.slidex.taxonomy_version},
                 )
@@ -198,7 +228,10 @@ class AgentLoop:
                 persisted_artifact = slide_artifact.model_copy(
                     update={"artifact_id": manifest.artifact_id}
                 )
-                inspect_slide.previous_artifact_id = manifest.artifact_id
+                previous_artifact_id = latest_artifact_ids.get(key)
+                previous_source_hash = latest_source_hashes.get(key)
+                latest_artifact_ids[key] = manifest.artifact_id
+                latest_source_hashes[key] = slide_artifact.source_sha256
                 critic = HybridCritic(
                     self.config.slidex,
                     critic_model=self.config.critic_model,
@@ -210,6 +243,8 @@ class AgentLoop:
                         render_path=str(observation.screenshot_path),
                     )
                 )
+                violations = detect_policy_violations(persisted_artifact)
+                report = report.model_copy(update={"policy_violations": violations})
                 report_uri = persist_report(
                     store,
                     episode_id,
@@ -217,7 +252,88 @@ class AgentLoop:
                     parent_artifact_id=manifest.artifact_id,
                 )
                 report = report.model_copy(update={"report_uri": report_uri})
-                return report.model_dump_json(indent=2)
+                explicit_repairs = pending_repairs.pop(key, [])
+                previous_report = inspection_reports.get(key)
+                for pending in explicit_repairs:
+                    append_repair_trajectory(
+                        self.workspace / ".history" / "slidex" / "repair_actions.jsonl",
+                        bind_after_artifact(
+                            pending,
+                            manifest.artifact_id,
+                            before_report=previous_report,
+                            after_report=report,
+                        ),
+                    )
+                if (
+                    previous_artifact_id
+                    and previous_source_hash != slide_artifact.source_sha256
+                    and not explicit_repairs
+                ):
+                    source_ids = (
+                        [
+                            action.source_inspection_ids[0]
+                            for action in actions_from_report(previous_report)
+                        ]
+                        if previous_report
+                        else []
+                    ) or ["inspection-unattributed"]
+                    inferred = RepairAction(
+                        action_id=f"repair-{uuid.uuid4().hex[:12]}",
+                        operation="policy_edit",
+                        target_ids=sorted(
+                            {
+                                element_id
+                                for result in previous_report.results
+                                for element_id in result.element_ids
+                            }
+                        )
+                        or ["slide-root"],
+                        constraints={"source_sha256": slide_artifact.source_sha256},
+                        source_inspection_ids=source_ids,
+                        before_artifact_id=previous_artifact_id,
+                        after_artifact_id=manifest.artifact_id,
+                        status="applied",
+                        policy_reason="Source changed outside deterministic repair tooling.",
+                        defect_delta=(
+                            compare_reports(previous_report, report)
+                            if previous_report
+                            else []
+                        ),
+                    )
+                    append_repair_trajectory(
+                        self.workspace / ".history" / "slidex" / "repair_actions.jsonl",
+                        inferred,
+                    )
+                inspected_artifacts[html_path.stem] = persisted_artifact
+                inspection_reports[key] = report
+                payload = report.model_dump()
+                payload["repair_actions"] = [
+                    action.model_dump() for action in actions_from_report(report)
+                ]
+                payload["summary"]["repair_rounds"] = rounds
+                payload["summary"]["repair_rounds_remaining"] = max(
+                    0, self.config.slidex.max_repair_rounds - rounds
+                )
+                payload["summary"]["hard_policy_violations"] = len(violations)
+                return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+
+            def apply_repair(html_file: str, action: dict) -> str:
+                """Apply one explicit low-risk RepairAction; re-run inspect_slide next."""
+                html_path = WorkspaceTools(self.workspace)._resolve(html_file)
+                repair = RepairAction.model_validate(action)
+                current = inspected_artifacts.get(html_path.stem)
+                if current is None or repair.before_artifact_id != current.artifact_id:
+                    raise ValueError(
+                        "repair action does not target the latest inspected artifact"
+                    )
+                executed = DeterministicRepairer().apply(html_path, repair)
+                append_repair_trajectory(
+                    self.workspace / ".history" / "slidex" / "repair_actions.jsonl",
+                    executed,
+                )
+                if executed.status.value == "applied":
+                    pending_repairs.setdefault(str(html_path), []).append(executed)
+                return executed.model_dump_json(indent=2)
 
             async def render_slide(
                 html_file: str,
@@ -235,6 +351,7 @@ class AgentLoop:
                 return str(observation.screenshot_path)
 
             agent_env.register_tool(inspect_slide)
+            agent_env.register_tool(apply_repair)
             agent_env.register_tool(render_slide)
             hello_message = f"DeepPresenter running in {self.workspace}, with {len(request.attachments)} attachments, prompt={request.instruction}"
             modes = []
@@ -358,6 +475,29 @@ class AgentLoop:
                 finally:
                     self.designagent.save_history()
                     self.save_results()
+                missing_inspections = {
+                    path.stem for path in slide_html_dir.glob("slide_*.html")
+                } - inspected_artifacts.keys()
+                if missing_inspections:
+                    raise RuntimeError(
+                        "export blocked: slides were not inspected: "
+                        + ", ".join(sorted(missing_inspections))
+                    )
+                deck_report = await DeckInspector(
+                    HybridCritic(
+                        self.config.slidex,
+                        critic_model=self.config.critic_model,
+                        semantic_model=self.config.semantic_model,
+                    ),
+                    self.config.slidex,
+                ).inspect(list(inspected_artifacts.values()))
+                deck_report_path = (
+                    self.workspace / ".history" / "slidex" / "deck_report.json"
+                )
+                deck_report_path.parent.mkdir(parents=True, exist_ok=True)
+                deck_report_path.write_text(deck_report.model_dump_json(indent=2))
+                self.intermediate_output["deck_inspection"] = deck_report_path
+                enforce_export_gate(deck_report)
                 pptx_path = self.workspace / f"{md_file.stem}.pptx"
                 try:
                     # ? this feature is in experimental stage

@@ -559,51 +559,53 @@ Research -> Design           reset -> step -> reward
 
 # Phase 7：Repair Loop 与生成流程集成
 
+> 状态（2026-07-24）：机器可读 repair action、显式 deterministic/policy repair、增量 deck gate、防 reward hacking 与生成闭环已完成。
+
 ## 7.1 机器可读 RepairAction
 
-- [ ] 定义 `RepairAction`：operation、target IDs、constraints、source inspection IDs。
-- [ ] 支持 `move_element`、`resize_container`、`reduce_text`、`change_font_size`、`replace_color`、`rename_term` 等操作类型。
-- [ ] repair hint 是建议，不直接修改 source；执行后必须重新 inspect。
-- [ ] 每个 action 保存 before/after artifact ID。
-- [ ] 不可执行的自由文本建议标记为 `policy_edit`。
+- [x] 定义 `RepairAction`：operation、target IDs、constraints、source inspection IDs。
+- [x] 支持 `move_element`、`resize_container`、`reduce_text`、`change_font_size`、`replace_color`、`rename_term` 等操作类型。
+- [x] repair hint 是建议，不直接修改 source；执行后必须重新 inspect。
+- [x] 每个 action 保存 before/after artifact ID。
+- [x] 不可执行的自由文本建议标记为 `policy_edit`。
 
 ## 7.2 Policy repair
 
-- [ ] 更新 Design prompt：先读结构化 report，再只修改被定位的元素。
-- [ ] 禁止为了通过 checker 删除核心内容或把元素隐藏。
-- [ ] 修订时保留稳定 element ID。
-- [ ] 每页设置 max repair rounds，超过后返回带 unresolved defects 的终态。
-- [ ] agent 不得在 inspector `error` 时假装页面通过。
+- [x] 更新 Design prompt：先读结构化 report，再只修改被定位的元素。
+- [x] 禁止为了通过 checker 删除核心内容或把元素隐藏。
+- [x] 修订时保留稳定 element ID。
+- [x] 每页设置 max repair rounds，超过后返回带 unresolved defects 的终态。
+- [x] agent 不得在 inspector `error` 时假装页面通过。
 
 ## 7.3 Deterministic repair（可选工具）
 
-- [ ] 实现安全边距 clamp。
-- [ ] 实现 palette replacement。
-- [ ] 实现 terminology canonical replacement。
-- [ ] 对 alignment snap、font shrink 等可能改变设计意图的操作默认仅建议，不自动执行。
-- [ ] deterministic repair 必须作为显式 action 写入 trajectory，不能后台静默修改。
+- [x] 实现安全边距 clamp。
+- [x] 实现 palette replacement。
+- [x] 实现 terminology canonical replacement。
+- [x] 对 alignment snap、font shrink 等可能改变设计意图的操作默认仅建议，不自动执行。
+- [x] deterministic repair 必须作为显式 action 写入 trajectory，不能后台静默修改。
 
 ## 7.4 Deck-level final inspection
 
-- [ ] 所有单页通过后运行 S2/S3/S5 和 typography/palette deck consistency。
-- [ ] deck-level repair 必须指明受影响页面，避免全 deck 无差别重生成。
-- [ ] 修订某页后只重跑受影响的 page inspectors，加上必要 deck inspectors。
-- [ ] finalization 前若存在 hard fail，默认阻止导出；允许显式 override，并记录原因。
+- [x] 所有单页通过后运行 S2/S3/S5 和 typography/palette deck consistency。
+- [x] deck-level repair 必须指明受影响页面，避免全 deck 无差别重生成。
+- [x] 修订某页后只重跑受影响的 page inspectors，加上必要 deck inspectors。
+- [x] finalization 前若存在 hard fail，默认阻止导出；允许显式 override，并记录原因。
 
 ## 7.5 防 reward hacking 检查
 
-- [ ] 检查 opacity、visibility、off-screen positioning、zero-size 等隐藏内容行为。
-- [ ] 检查重要文本被转为不可解析图片以绕过 terminology/semantic checker。
-- [ ] 检查字体过小但无 overflow 的规避行为。
-- [ ] 检查将所有元素标记为 decorative/allow-overlap 的滥用。
-- [ ] 检查删除 manuscript 必需内容以降低 density。
-- [ ] 将这些行为列为 hard policy violations。
+- [x] 检查 opacity、visibility、off-screen positioning、zero-size 等隐藏内容行为。
+- [x] 检查重要文本被转为不可解析图片以绕过 terminology/semantic checker。
+- [x] 检查字体过小但无 overflow 的规避行为。
+- [x] 检查将所有元素标记为 decorative/allow-overlap 的滥用。
+- [x] 检查删除 manuscript 必需内容以降低 density。
+- [x] 将这些行为列为 hard policy violations。
 
 ### Phase 7 退出条件
 
-- [ ] 生成 → inspect → localized repair → re-inspect 形成闭环。
-- [ ] 每次修订有明确父 artifact 和 defect delta。
-- [ ] hard failure 不能被 aesthetic/semantic 高分抵消。
+- [x] 生成 → inspect → localized repair → re-inspect 形成闭环。
+- [x] 每次修订有明确父 artifact 和 defect delta。
+- [x] hard failure 不能被 aesthetic/semantic 高分抵消。
 
 ---
 
