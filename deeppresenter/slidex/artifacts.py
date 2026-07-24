@@ -64,7 +64,9 @@ class ArtifactStore:
         if len(list(artifacts_dir.iterdir())) >= self.max_artifacts:
             raise ValueError("artifact quota exceeded")
 
-        materialized = {name: self._read_content(value) for name, value in files.items()}
+        materialized = {
+            name: self._read_content(value) for name, value in files.items()
+        }
         content_hash = self._content_hash(materialized)
         artifact_id = f"{uuid.uuid4().hex[:12]}-{content_hash[:16]}"
         final_dir = artifacts_dir / artifact_id
@@ -95,7 +97,9 @@ class ArtifactStore:
                 files=references,
                 provenance=provenance,
             )
-            self._atomic_json(temp_dir / "manifest.json", manifest.model_dump(mode="json"))
+            self._atomic_json(
+                temp_dir / "manifest.json", manifest.model_dump(mode="json")
+            )
             self._enforce_size_quota(workspace)
             os.rename(temp_dir, final_dir)
         except BaseException:
@@ -104,6 +108,21 @@ class ArtifactStore:
 
         self._append_artifact(workspace, artifact_id)
         return manifest
+
+    def read_artifact_file(self, episode_id: str, artifact_id: str, name: str) -> bytes:
+        """Read one verified file from an immutable artifact."""
+        artifact_dir = self._episode_path(episode_id) / "artifacts" / artifact_id
+        manifest = ArtifactManifest.model_validate_json(
+            (artifact_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        reference = manifest.files.get(name)
+        if reference is None:
+            raise FileNotFoundError(f"artifact file does not exist: {name}")
+        path = self._safe_child(artifact_dir, name)
+        content = path.read_bytes()
+        if sha256_bytes(content) != reference.sha256:
+            raise ValueError(f"artifact hash mismatch: {name}")
+        return content
 
     def verify_artifact(self, episode_id: str, artifact_id: str) -> bool:
         artifact_dir = self._episode_path(episode_id) / "artifacts" / artifact_id

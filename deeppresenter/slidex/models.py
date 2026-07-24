@@ -179,6 +179,13 @@ class Provenance(SlidexModel):
     versions: dict[str, str] = Field(default_factory=dict)
 
 
+class ArtifactTrust(StrEnum):
+    TRUSTED_SOURCE = "trusted_source"
+    PARTIAL_NATIVE = "partial_native"
+    RECOVERED = "recovered"
+    IMAGE_ONLY = "image_only"
+
+
 class SlideArtifact(SlidexModel):
     schema_version: Literal["2.0"] = SCHEMA_VERSION
     artifact_id: str = Field(min_length=1)
@@ -189,6 +196,8 @@ class SlideArtifact(SlidexModel):
     renders: list[RenderArtifact] = Field(default_factory=list)
     assets: dict[str, str] = Field(default_factory=dict)
     provenance: Provenance
+    trust: ArtifactTrust = ArtifactTrust.TRUSTED_SOURCE
+    missing_bookkeeping: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_slide_identity(self) -> SlideArtifact:
@@ -229,6 +238,14 @@ class InspectionResult(SlidexModel):
     raw_output_uri: str | None = None
 
 
+class RouteRecord(SlidexModel):
+    defect_class: DefectClass
+    stages: list[str] = Field(default_factory=list)
+    reason: str
+    missing_evidence: list[str] = Field(default_factory=list)
+    capability_limit: str | None = None
+
+
 class InspectionReport(SlidexModel):
     schema_version: Literal["2.0"] = SCHEMA_VERSION
     artifact_id: str
@@ -237,6 +254,12 @@ class InspectionReport(SlidexModel):
     summary: dict[str, int | float | str] = Field(default_factory=dict)
     router_version: str
     taxonomy_version: str
+    router_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    routes: list[RouteRecord] = Field(default_factory=list)
+    conflicts: list[DefectClass] = Field(default_factory=list)
+    resolved_status: dict[DefectClass, InspectionStatus] = Field(default_factory=dict)
+    capability_limits: list[str] = Field(default_factory=list)
+    report_uri: str | None = None
 
 
 class RewardBreakdown(SlidexModel):

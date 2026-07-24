@@ -506,54 +506,54 @@ Research -> Design           reset -> step -> reward
 
 ## 6.1 Router v1 映射
 
-- [ ] 定义默认 frozen mapping：G2/G3/G4/G5/G6 → symbolic native-IR inspectors。
-- [ ] S3 → terminology linter。
-- [ ] G7 → DOM render overflow；unresolved 时 atomic VLM。
-- [ ] S1 → atomic semantic inspector。
-- [ ] S4 → symbolic density statistics + semantic boundary inspector。
-- [ ] S2/S5 → deck-level semantic inspector。
-- [ ] S6 → atomic VLM；证据不足时 reference inspector 或 defer。
-- [ ] G1 → source/computed checker；无法从单页确定的情形进入 reference policy。
+- [x] 定义默认 frozen mapping：G2/G3/G4/G5/G6 → symbolic native-IR inspectors。
+- [x] S3 → terminology linter。
+- [x] G7 → DOM render overflow；unresolved 时 atomic VLM。
+- [x] S1 → atomic semantic inspector。
+- [x] S4 → symbolic density statistics + semantic boundary inspector。
+- [x] S2/S5 → deck-level semantic inspector。
+- [x] S6 → atomic VLM；证据不足时 reference inspector 或 defer。
+- [x] G1 → source/computed checker；无法从单页确定的情形进入 reference policy。
 
 ## 6.2 Router 行为约束
 
-- [ ] router 输入仅包含 defect class、available evidence、artifact trust level 和配置。
-- [ ] router 不读取模型输出后再 post-hoc 改路线以提高分数。
-- [ ] inspector `defer` 是终态之一；只有 frozen policy 明确允许时才进入下一 inspector。
-- [ ] router 输出记录选择原因和缺失证据。
-- [ ] router 配置保存为机器可读对象并计算 hash。
-- [ ] taxonomy/router 变更必须提升版本，旧 trajectory 保留旧版本解释。
+- [x] router 输入仅包含 defect class、available evidence、artifact trust level 和配置。
+- [x] router 不读取模型输出后再 post-hoc 改路线以提高分数。
+- [x] inspector `defer` 是终态之一；只有 frozen policy 明确允许时才进入下一 inspector。
+- [x] router 输出记录选择原因和缺失证据。
+- [x] router 配置保存为机器可读对象并计算 hash。
+- [x] taxonomy/router 变更必须提升版本，旧 trajectory 保留旧版本解释。
 
 ## 6.3 Trust policy
 
-- [ ] `native_html` 和 Slidex 生成的 DOM 标为 trusted source IR。
-- [ ] 第三方 PPTX 提取的原生 XML 标为 partial trusted，并声明缺少哪些 bookkeeping。
-- [ ] 从 PNG/PDF layout detector 恢复的 boxes 标为 recovered/untrusted。
-- [ ] symbolic linter 对 recovered structure 不宣称 native-IR 保证。
-- [ ] open-world image-only 输入自动降级为 VLM-only，并在 report 中显式标注能力上限。
+- [x] `native_html` 和 Slidex 生成的 DOM 标为 trusted source IR。
+- [x] 第三方 PPTX 提取的原生 XML 标为 partial trusted，并声明缺少哪些 bookkeeping。
+- [x] 从 PNG/PDF layout detector 恢复的 boxes 标为 recovered/untrusted。
+- [x] symbolic linter 对 recovered structure 不宣称 native-IR 保证。
+- [x] open-world image-only 输入自动降级为 VLM-only，并在 report 中显式标注能力上限。
 
 ## 6.4 Critic 聚合
 
-- [ ] 汇总 per-class inspection results，不用平均值掩盖 hard failure。
-- [ ] summary 明确列出 fail、defer、error 和 not-applicable 数量。
-- [ ] 对 inspector 冲突保留双方结果，不直接覆盖。
-- [ ] 增加 deterministic priority 规则，但仅适用于 trusted native predicates。
-- [ ] critic report 写入 artifact store，并可通过 API 获取。
+- [x] 汇总 per-class inspection results，不用平均值掩盖 hard failure。
+- [x] summary 明确列出 fail、defer、error 和 not-applicable 数量。
+- [x] 对 inspector 冲突保留双方结果，不直接覆盖。
+- [x] 增加 deterministic priority 规则，但仅适用于 trusted native predicates。
+- [x] critic report 写入 artifact store，并可通过 API 获取。
 
 ## 6.5 与 `inspect_slide` 集成
 
-- [ ] 将 `tools/reflect.py:inspect_slide` 改为调用 Slidex critic service。
-- [ ] 返回结构化 JSON 文本或 artifact URI，不再仅返回 image block。
-- [ ] 删除未启用 multimodal 时返回 `This slide is valid.` 的错误语义。
-- [ ] 无 critic model 时仍运行 symbolic inspectors；神经项返回明确 `defer/unavailable`。
-- [ ] 提供单独 `render_slide` 工具给 agent 请求视觉预览，避免检查与渲染职责混合。
-- [ ] Design Agent 收到 report 后必须逐项处理 hard failures，并在下一 revision 关联前一 artifact。
+- [x] 将 `tools/reflect.py:inspect_slide` 改为调用 Slidex critic service。
+- [x] 返回结构化 JSON 文本或 artifact URI，不再仅返回 image block。
+- [x] 删除未启用 multimodal 时返回 `This slide is valid.` 的错误语义。
+- [x] 无 critic model 时仍运行 symbolic inspectors；神经项返回明确 `defer/unavailable`。
+- [x] 提供单独 `render_slide` 工具给 agent 请求视觉预览，避免检查与渲染职责混合。
+- [x] Design Agent 收到 report 后必须逐项处理 hard failures，并在下一 revision 关联前一 artifact。
 
 ### Phase 6 退出条件
 
-- [ ] `inspect_slide` 在无 VLM 时仍能提供可信 symbolic report。
-- [ ] router 版本、路线和 defer 行为均可回放。
-- [ ] 当前“看图自省”已替换为论文式 hybrid critic，而不是在其旁边叠加另一个评分器。
+- [x] `inspect_slide` 在无 VLM 时仍能提供可信 symbolic report。
+- [x] router 版本、路线和 defer 行为均可回放。
+- [x] 当前“看图自省”已替换为论文式 hybrid critic，而不是在其旁边叠加另一个评分器。
 
 ---
 

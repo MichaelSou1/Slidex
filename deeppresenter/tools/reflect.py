@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import os
 import re
 import tempfile
@@ -9,6 +10,16 @@ from typing import Literal
 from fastmcp import FastMCP
 from mcp.types import ImageContent
 
+from deeppresenter.slidex.artifacts import ArtifactStore
+from deeppresenter.slidex.browser import BrowserObserver, extract_declared_ir
+from deeppresenter.slidex.critic import HybridCritic, persist_report
+from deeppresenter.slidex.models import (
+    InspectionContext,
+    Provenance,
+    RenderArtifact,
+    RendererInfo,
+    SlideArtifact,
+)
 from deeppresenter.utils.config import DeepPresenterConfig
 from deeppresenter.utils.log import info, set_logger
 from deeppresenter.utils.webview import (
@@ -28,38 +39,105 @@ REFLECTIVE_DESIGN = CONFIG.design_agent.is_multimodal and CONFIG.heavy_reflect
 async def inspect_slide(
     html_file: str,
     aspect_ratio: Literal["16:9", "4:3", "A1", "A2", "A3", "A4"] = "16:9",
-) -> ImageContent | str:
-    """
-    Read the HTML file as an image.
-
-    Returns:
-        ImageContent: The slide as an image content
-        str: Error message if inspection fails
-    """
+) -> str:
+    """Run the frozen Slidex hybrid critic and return its structured report."""
     html_path = Path(html_file).absolute()
     assert html_path.is_file() and html_path.suffix == ".html", (
         f"HTML path {html_path} does not exist or is not an HTML file"
     )
     await convert_html_to_pptx(html_path, aspect_ratio=aspect_ratio)
-
-    if REFLECTIVE_DESIGN:
-        pdf_path = Path(tempfile.mkdtemp()) / "slide.pdf"
-        async with PlaywrightConverter() as converter:
-            image_dir = await converter.convert_to_pdf(
-                [html_path], pdf_path, aspect_ratio
+    output_dir = html_path.parent / ".slidex" / html_path.stem
+    observation = await BrowserObserver().observe(
+        html_path, output_dir, slide_id=html_path.stem, debug_overlay=True
+    )
+    declared = extract_declared_ir(
+        html_path,
+        slide_id=html_path.stem,
+        global_css=html_path.parent / "global.css"
+        if (html_path.parent / "global.css").exists()
+        else None,
+    )
+    source = html_path.read_bytes()
+    provenance = Provenance(
+        creation_action="inspect_slide",
+        versions={"taxonomy": CONFIG.slidex.taxonomy_version},
+    )
+    artifact = SlideArtifact(
+        artifact_id="pending",
+        source_uri=html_path.as_uri(),
+        source_sha256=hashlib.sha256(source).hexdigest(),
+        declared_ir=declared,
+        computed_ir=observation.computed_ir,
+        renders=[
+            RenderArtifact(
+                kind="html",
+                uri=observation.screenshot_path.as_uri(),
+                sha256=hashlib.sha256(
+                    observation.screenshot_path.read_bytes()
+                ).hexdigest(),
+                width=int(observation.computed_ir.page_width),
+                height=int(observation.computed_ir.page_height),
+                renderer=RendererInfo(
+                    name=observation.computed_ir.browser,
+                    version=observation.computed_ir.browser_version,
+                ),
             )
-        image_path = image_dir / "slide_01.jpg"
-        image_data = image_path.read_bytes()
-        base64_data = (
-            f"data:image/jpeg;base64,{base64.b64encode(image_data).decode('utf-8')}"
+        ],
+        provenance=provenance,
+    )
+    store = ArtifactStore(output_dir / "artifacts")
+    episode = store.create_episode(
+        versions={
+            "taxonomy": CONFIG.slidex.taxonomy_version,
+            "router": CONFIG.slidex.router_version,
+        }
+    )
+    manifest = store.write_artifact(
+        episode.episode_id,
+        {
+            f"source/{html_path.name}": html_path,
+            "renders/render.png": observation.screenshot_path,
+            "ir/declared.json": declared.model_dump_json(indent=2),
+            "ir/computed.json": observation.computed_ir.model_dump_json(indent=2),
+        },
+        provenance,
+        artifact,
+    )
+    artifact = artifact.model_copy(update={"artifact_id": manifest.artifact_id})
+    report = await HybridCritic(
+        CONFIG.slidex,
+        critic_model=CONFIG.critic_model,
+        semantic_model=CONFIG.semantic_model,
+    ).inspect(
+        InspectionContext(
+            artifact=artifact, render_path=str(observation.screenshot_path)
         )
-        return ImageContent(
-            type="image",
-            data=base64_data,
-            mimeType="image/jpeg",
-        )
-    else:
-        return "This slide is valid."
+    )
+    report_uri = persist_report(
+        store, episode.episode_id, report, parent_artifact_id=manifest.artifact_id
+    )
+    return report.model_copy(update={"report_uri": report_uri}).model_dump_json(
+        indent=2
+    )
+
+
+@mcp.tool()
+async def render_slide(
+    html_file: str,
+    aspect_ratio: Literal["16:9", "4:3", "A1", "A2", "A3", "A4"] = "16:9",
+) -> ImageContent:
+    """Render a visual preview without making an inspection verdict."""
+    html_path = Path(html_file).absolute()
+    assert html_path.is_file() and html_path.suffix == ".html"
+    pdf_path = Path(tempfile.mkdtemp()) / "slide.pdf"
+    async with PlaywrightConverter() as converter:
+        image_dir = await converter.convert_to_pdf([html_path], pdf_path, aspect_ratio)
+    image_data = (image_dir / "slide_01.jpg").read_bytes()
+    return ImageContent(
+        type="image",
+        data=f"data:image/jpeg;base64,{base64.b64encode(image_data).decode('utf-8')}",
+        mimeType="image/jpeg",
+    )
 
 
 @mcp.tool()

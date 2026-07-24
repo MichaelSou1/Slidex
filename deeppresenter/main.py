@@ -14,7 +14,9 @@ from deeppresenter.agents.research import Research
 from deeppresenter.agents.subagent import SubAgent
 from deeppresenter.slidex.artifacts import ArtifactStore
 from deeppresenter.slidex.browser import BrowserObserver, extract_declared_ir
+from deeppresenter.slidex.critic import HybridCritic, persist_report
 from deeppresenter.slidex.models import (
+    InspectionContext,
     Provenance,
     RenderArtifact,
     RendererInfo,
@@ -133,9 +135,16 @@ class AgentLoop:
                     max_workspace_bytes=self.config.slidex.max_workspace_bytes,
                     max_artifacts=self.config.slidex.max_artifacts_per_episode,
                 )
-                episode = store.create_episode(
-                    versions={"taxonomy": self.config.slidex.taxonomy_version}
-                )
+                episode_id = getattr(inspect_slide, "episode_id", None)
+                if episode_id is None:
+                    episode = store.create_episode(
+                        versions={
+                            "taxonomy": self.config.slidex.taxonomy_version,
+                            "router": self.config.slidex.router_version,
+                        }
+                    )
+                    episode_id = episode.episode_id
+                    inspect_slide.episode_id = episode_id
                 source = html_path.read_bytes()
                 renderer = RendererInfo(
                     name=observation.computed_ir.browser,
@@ -148,6 +157,9 @@ class AgentLoop:
                     },
                 )
                 provenance = Provenance(
+                    parent_artifact_id=getattr(
+                        inspect_slide, "previous_artifact_id", None
+                    ),
                     creation_action="inspect_slide",
                     versions={"taxonomy": self.config.slidex.taxonomy_version},
                 )
@@ -181,11 +193,49 @@ class AgentLoop:
                 if observation.overlay_path:
                     files["renders/overlay.png"] = observation.overlay_path
                 manifest = store.write_artifact(
-                    episode.episode_id, files, provenance, slide_artifact
+                    episode_id, files, provenance, slide_artifact
                 )
-                return f"This slide is valid. Browser evidence: artifact://{episode.episode_id}/{manifest.artifact_id}."
+                persisted_artifact = slide_artifact.model_copy(
+                    update={"artifact_id": manifest.artifact_id}
+                )
+                inspect_slide.previous_artifact_id = manifest.artifact_id
+                critic = HybridCritic(
+                    self.config.slidex,
+                    critic_model=self.config.critic_model,
+                    semantic_model=self.config.semantic_model,
+                )
+                report = await critic.inspect(
+                    InspectionContext(
+                        artifact=persisted_artifact,
+                        render_path=str(observation.screenshot_path),
+                    )
+                )
+                report_uri = persist_report(
+                    store,
+                    episode_id,
+                    report,
+                    parent_artifact_id=manifest.artifact_id,
+                )
+                report = report.model_copy(update={"report_uri": report_uri})
+                return report.model_dump_json(indent=2)
+
+            async def render_slide(
+                html_file: str,
+                aspect_ratio: Literal["16:9", "4:3", "A1", "A2", "A3", "A4"] = "16:9",
+            ) -> str:
+                """Render a visual preview without making a quality judgment."""
+                html_path = WorkspaceTools(self.workspace)._resolve(html_file)
+                output_dir = self.workspace / ".history" / "previews" / html_path.stem
+                observation = await BrowserObserver().observe(
+                    html_path,
+                    output_dir,
+                    slide_id=html_path.stem,
+                    debug_overlay=False,
+                )
+                return str(observation.screenshot_path)
 
             agent_env.register_tool(inspect_slide)
+            agent_env.register_tool(render_slide)
             hello_message = f"DeepPresenter running in {self.workspace}, with {len(request.attachments)} attachments, prompt={request.instruction}"
             modes = []
             if self.config.offline_mode:

@@ -366,8 +366,38 @@ class DeclaredOverflowInspector:
                     started_at=started,
                 )
             )
-        return failures or [
-            result(self, artifact, InspectionStatus.PASS, started_at=started)
+        if failures:
+            return failures
+        has_constraint_evidence = any(
+            item.style.get("declared_overflow") is not None
+            or item.style.get("constraint_violation") is not None
+            for item in _flatten(artifact.declared_ir.elements)
+        )
+        return [
+            result(
+                self,
+                artifact,
+                InspectionStatus.PASS
+                if has_constraint_evidence
+                else InspectionStatus.DEFER,
+                confidence=1 if has_constraint_evidence else 0,
+                evidence=(
+                    [
+                        Evidence(
+                            source=EvidenceSource.DECLARED_IR,
+                            detail="source explicitly declares no text/container constraint violation",
+                        )
+                    ]
+                    if has_constraint_evidence
+                    else [
+                        Evidence(
+                            source=EvidenceSource.DECLARED_IR,
+                            detail="source has no explicit container-fit bookkeeping",
+                        )
+                    ]
+                ),
+                started_at=started,
+            )
         ]
 
 

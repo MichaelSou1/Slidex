@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any
 
 from deeppresenter.slidex.inspectors.neural import AtomicNeuralClient
