@@ -60,6 +60,12 @@ slidex:
   taxonomy_version: "1.0"
   router_version: "1.0"
   reward_version: "1.0"
+  # Frozen hard-gate thresholds; changing one requires a reward version bump.
+  reward_terminal_hard_negative: -1
+  reward_severe_defect_threshold: 0.7
+  reward_inspector_error_penalty: 0.2
+  reward_inspector_error_invalidation_count: 2
+  reward_policy_penalty_per_severity: 0.25
   safety_margin_px: 24
   alignment_tolerance_px: 2
   overlap_tolerance_px: 1

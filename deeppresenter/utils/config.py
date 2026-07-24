@@ -397,6 +397,11 @@ class SlidexConfig(BaseModel):
     taxonomy_version: str = "1.0"
     router_version: str = "1.0"
     reward_version: str = "1.0"
+    reward_terminal_hard_negative: float = Field(default=-1, ge=-1, le=0)
+    reward_severe_defect_threshold: float = Field(default=0.7, ge=0, le=1)
+    reward_inspector_error_penalty: float = Field(default=0.2, ge=0, le=1)
+    reward_inspector_error_invalidation_count: int = Field(default=2, ge=1)
+    reward_policy_penalty_per_severity: float = Field(default=0.25, ge=0, le=1)
     safety_margin_px: float = Field(default=24, ge=0)
     alignment_tolerance_px: float = Field(default=2, ge=0)
     overlap_tolerance_px: float = Field(default=1, ge=0)

@@ -61,6 +61,8 @@ class PolicyViolationCode(StrEnum):
     TINY_TEXT = "tiny_text"
     EXEMPTION_ABUSE = "exemption_abuse"
     REQUIRED_CONTENT_REMOVED = "required_content_removed"
+    PATH_ESCAPE = "path_escape"
+    INVALID_ACTION = "invalid_action"
 
 
 class InspectionStatus(StrEnum):
@@ -328,6 +330,8 @@ class DefectTransition(SlidexModel):
     defect_class: DefectClass
     before: InspectionStatus
     after: InspectionStatus
+    before_severity: float = Field(default=0, ge=0, le=1)
+    after_severity: float = Field(default=0, ge=0, le=1)
     transition: Literal["improved", "unchanged", "worsened"]
 
 
@@ -429,6 +433,8 @@ class DeckInspectionReport(SlidexModel):
 
 
 class RewardBreakdown(SlidexModel):
+    """Legacy scalar reward view retained for API compatibility."""
+
     schema_version: Literal["2.0"] = SCHEMA_VERSION
     hard_constraints: dict[str, bool] = Field(default_factory=dict)
     soft_scores: dict[str, float] = Field(default_factory=dict)

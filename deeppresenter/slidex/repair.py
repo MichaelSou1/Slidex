@@ -230,16 +230,20 @@ def compare_reports(
     """Compute replayable per-class repair transitions."""
     before_status = _report_status(before)
     after_status = _report_status(after)
+    before_severity = _report_severity(before)
+    after_severity = _report_severity(after)
     transitions: list[DefectTransition] = []
     for defect_class in sorted(before_status.keys() | after_status.keys()):
         old = before_status.get(defect_class, InspectionStatus.NOT_APPLICABLE)
         new = after_status.get(defect_class, InspectionStatus.NOT_APPLICABLE)
         old_rank, new_rank = _status_rank(old), _status_rank(new)
+        old_severity = before_severity.get(defect_class, 0)
+        new_severity = after_severity.get(defect_class, 0)
         transition = (
             "improved"
-            if new_rank < old_rank
+            if new_rank < old_rank or (new_rank == old_rank and new_severity < old_severity)
             else "worsened"
-            if new_rank > old_rank
+            if new_rank > old_rank or (new_rank == old_rank and new_severity > old_severity)
             else "unchanged"
         )
         transitions.append(
@@ -247,6 +251,8 @@ def compare_reports(
                 defect_class=defect_class,
                 before=old,
                 after=new,
+                before_severity=old_severity,
+                after_severity=new_severity,
                 transition=transition,
             )
         )
@@ -402,6 +408,16 @@ def _report_status(report: InspectionReport) -> dict[DefectClass, InspectionStat
         if current is None or _status_rank(result.status) > _status_rank(current):
             statuses[result.defect_class] = result.status
     return statuses
+
+
+def _report_severity(report: InspectionReport) -> dict[DefectClass, float]:
+    severity: dict[DefectClass, float] = {}
+    for result in report.results:
+        severity[result.defect_class] = max(
+            severity.get(result.defect_class, 0),
+            result.severity if result.status == InspectionStatus.FAIL else 0,
+        )
+    return severity
 
 
 def _status_rank(status: InspectionStatus) -> int:

@@ -664,53 +664,53 @@ Research -> Design           reset -> step -> reward
 
 ## 9.1 Reward vector
 
-- [ ] 定义 `validity_reward`：source、browser、export 和 re-render 是否成功。
-- [ ] 定义 `geometry_reward`：G1–G7 的 per-class pass/fail/severity。
-- [ ] 定义 `semantic_reward`：S1–S6 的结果，defer 与 error 单独记录。
-- [ ] 定义 `fidelity_reward`：HTML 与最终 PPTX render 一致性。
-- [ ] 定义 `task_reward`：页面数、outline、必需内容和用户约束。
-- [ ] 定义 `efficiency_reward`：token、模型调用、工具调用、repair steps 和 latency。
-- [ ] 定义 `policy_violation_penalty`：隐藏内容、路径逃逸、无效 action 等。
+- [x] 定义 `validity_reward`：source、browser、export 和 re-render 是否成功。
+- [x] 定义 `geometry_reward`：G1–G7 的 per-class pass/fail/severity。
+- [x] 定义 `semantic_reward`：S1–S6 的结果，defer 与 error 单独记录。
+- [x] 定义 `fidelity_reward`：HTML 与最终 PPTX render 一致性。
+- [x] 定义 `task_reward`：页面数、outline、必需内容和用户约束。
+- [x] 定义 `efficiency_reward`：token、模型调用、工具调用、repair steps 和 latency。
+- [x] 定义 `policy_violation_penalty`：隐藏内容、路径逃逸、无效 action 等。
 
 ## 9.2 Hard-gated aggregation
 
-- [ ] invalid export 触发 terminal hard negative。
-- [ ] 存在严重 overflow、missing asset、页面出界时不发 aesthetic bonus。
-- [ ] defer 不等于 pass；聚合时保留 coverage。
-- [ ] inspector error 不直接算 defect miss，但触发 reliability penalty/episode invalidation。
-- [ ] 所有 hard gate 的阈值进入 `reward_version` 配置。
-- [ ] API 同时返回 reward vector 和 aggregate scalar。
+- [x] invalid export 触发 terminal hard negative。
+- [x] 存在严重 overflow、missing asset、页面出界时不发 aesthetic bonus。
+- [x] defer 不等于 pass；聚合时保留 coverage。
+- [x] inspector error 不直接算 defect miss，但触发 reliability penalty/episode invalidation。
+- [x] 所有 hard gate 的阈值进入 `reward_version` 配置。
+- [x] API 同时返回 reward vector 和 aggregate scalar。
 
 ## 9.3 Repair delta reward
 
-- [ ] 计算修订前后 fail 数量和 severity delta。
-- [ ] 奖励解决目标 defect，同时惩罚引入新 defect。
-- [ ] 保留未变化、改善、恶化三类 per-class transition。
-- [ ] 避免仅因多次微小编辑累积无限正奖励；采用 potential-based 或终态奖励约束。
-- [ ] 对 deterministic tool repair 与 policy repair 分开统计。
+- [x] 计算修订前后 fail 数量和 severity delta。
+- [x] 奖励解决目标 defect，同时惩罚引入新 defect。
+- [x] 保留未变化、改善、恶化三类 per-class transition。
+- [x] 避免仅因多次微小编辑累积无限正奖励；采用 potential-based 或终态奖励约束。
+- [x] 对 deterministic tool repair 与 policy repair 分开统计。
 
 ## 9.4 Reward calibration
 
-- [ ] 使用 matched clean/defective pairs 校准 hard checker。
-- [ ] 报告 recall、specificity、balanced accuracy 和 localization，而非只报 accuracy。
-- [ ] 神经 checker 按模型/provider 分开校准。
-- [ ] 对 clean-vs-clean、AB/BA 和 repeated query 做偏差控制。
-- [ ] reward 配置冻结后再跑 held-out evaluation。
-- [ ] development 调参数据与最终评测数据严格分离。
+- [x] 使用 matched clean/defective pairs 校准 hard checker。
+- [x] 报告 recall、specificity、balanced accuracy 和 localization，而非只报 accuracy。
+- [x] 神经 checker 按模型/provider 分开校准。
+- [x] 对 clean-vs-clean、AB/BA 和 repeated query 做偏差控制。
+- [x] reward 配置冻结后再跑 held-out evaluation。
+- [x] development 调参数据与最终评测数据严格分离。
 
 ## 9.5 Reward 输出与审计
 
-- [ ] 每个 reward component 引用产生它的 inspection result ID。
-- [ ] 保存聚合公式、权重和 gate reason。
-- [ ] 提供 `explain_reward()`，输出机器可读解释。
-- [ ] 支持离线根据相同 artifacts 重新计算 reward。
-- [ ] reward 重算不能重新调用不确定模型，除非显式开始新的 evaluation run。
+- [x] 每个 reward component 引用产生它的 inspection result ID。
+- [x] 保存聚合公式、权重和 gate reason。
+- [x] 提供 `explain_reward()`，输出机器可读解释。
+- [x] 支持离线根据相同 artifacts 重新计算 reward。
+- [x] reward 重算不能重新调用不确定模型，除非显式开始新的 evaluation run。
 
 ### Phase 9 退出条件
 
-- [ ] 同一 artifact + 同一 critic/reward version 可得到可复算结果。
-- [ ] hard defect 无法被 soft score抵消。
-- [ ] reward 能用于单页 repair RL，也能汇总 deck generation。
+- [x] 同一 artifact + 同一 critic/reward version 可得到可复算结果。
+- [x] hard defect 无法被 soft score抵消。
+- [x] reward 能用于单页 repair RL，也能汇总 deck generation。
 
 ---
 

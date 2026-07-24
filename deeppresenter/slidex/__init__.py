@@ -11,6 +11,14 @@ from deeppresenter.slidex.export import (
     RenderFidelityValidator,
 )
 from deeppresenter.slidex.repair import DeterministicRepairer, actions_from_report
+from deeppresenter.slidex.reward import (
+    RewardCalibrator,
+    RewardConfig,
+    RewardEngine,
+    ValiditySignals,
+    explain_reward,
+    persist_reward,
+)
 from deeppresenter.slidex.router import FrozenCriticRouter, FrozenRouterConfig
 from deeppresenter.slidex.models import SlideArtifact
 
@@ -26,9 +34,15 @@ __all__ = [
     "HybridCritic",
     "LibreOfficeRenderer",
     "RenderFidelityValidator",
+    "RewardCalibrator",
+    "RewardConfig",
+    "RewardEngine",
+    "ValiditySignals",
     "SlideArtifact",
     "SymbolicCritic",
     "actions_from_report",
     "enforce_export_gate",
+    "explain_reward",
+    "persist_reward",
     "extract_declared_ir",
 ]
