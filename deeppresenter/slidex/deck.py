@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from deeppresenter.slidex.critic import HybridCritic
 from deeppresenter.slidex.inspectors.style import TypographyInspector
@@ -35,6 +37,7 @@ class DeckInspector:
         previous: DeckInspectionReport | None = None,
         changed_slide_ids: Iterable[str] | None = None,
         approved_outline: list[str] | None = None,
+        task: str | None = None,
         override_reason: str | None = None,
     ) -> DeckInspectionReport:
         if not artifacts:
@@ -57,9 +60,11 @@ class DeckInspector:
             page_reports[slide_id] = await self.critic.inspect(
                 InspectionContext(
                     artifact=artifact,
+                    render_path=_local_render_path(artifact),
                     slide_summaries=summaries,
                     approved_outline=approved_outline or [],
                     deck_outline=approved_outline or [],
+                    task=task,
                 )
             )
 
@@ -197,3 +202,14 @@ def _status_priority(status: InspectionStatus) -> int:
         InspectionStatus.PASS: 1,
         InspectionStatus.NOT_APPLICABLE: 0,
     }[status]
+
+
+def _local_render_path(artifact: SlideArtifact) -> str | None:
+    if not artifact.renders:
+        return None
+    uri = artifact.renders[-1].uri
+    parsed = urlparse(uri)
+    if parsed.scheme == "file":
+        return str(Path(unquote(parsed.path)))
+    path = Path(uri)
+    return str(path) if path.is_file() else None

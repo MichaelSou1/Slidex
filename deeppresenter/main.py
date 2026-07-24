@@ -1,10 +1,12 @@
 import hashlib
 import json
+import time
 import traceback
 import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Literal
+from urllib.parse import unquote, urlparse
 
 from deeppresenter.agents.design import Design
 from deeppresenter.agents.env import AgentEnv
@@ -16,7 +18,13 @@ from deeppresenter.slidex.artifacts import ArtifactStore
 from deeppresenter.slidex.browser import BrowserObserver, extract_declared_ir
 from deeppresenter.slidex.critic import HybridCritic, persist_report
 from deeppresenter.slidex.deck import DeckInspector, enforce_export_gate
-from deeppresenter.slidex.export import FinalExportService, RenderFidelityValidator
+from deeppresenter.slidex.export import (
+    FinalExportService,
+    RenderFidelityValidator,
+    extract_pptx_structure,
+    pptx_to_slide_artifacts,
+)
+from deeppresenter.slidex.grounding import GroundingEvaluator
 from deeppresenter.slidex.models import (
     InspectionContext,
     FinalArtifactStatus,
@@ -25,6 +33,12 @@ from deeppresenter.slidex.models import (
     RenderArtifact,
     RendererInfo,
     SlideArtifact,
+)
+from deeppresenter.slidex.reward import (
+    EfficiencyUsage,
+    RewardConfig,
+    RewardEngine,
+    build_task_outcome,
 )
 from deeppresenter.slidex.repair import (
     DeterministicRepairer,
@@ -38,8 +52,72 @@ from deeppresenter.tools.filesystem import WorkspaceTools
 from deeppresenter.utils.config import DeepPresenterConfig
 from deeppresenter.utils.constants import WORKSPACE_BASE
 from deeppresenter.utils.log import debug, error, set_logger, timer
+from deeppresenter.utils.outline import Outline
 from deeppresenter.utils.typings import ChatMessage, ConvertType, InputRequest, Role
 from deeppresenter.utils.webview import convert_html_to_pptx
+from pypdf import PdfReader
+
+
+def _exact_page_count(value: str | None) -> int | None:
+    if not value or not value.strip().isdigit():
+        return None
+    return int(value.strip())
+
+
+def _outline_titles(path: str | Path | None) -> list[str]:
+    if not path:
+        return []
+    outline_path = Path(path)
+    if not outline_path.is_file():
+        return []
+    outline = Outline.model_validate_json(outline_path.read_text(encoding="utf-8"))
+    return [slide.title for slide in outline.slides]
+
+
+def _required_terms(request: InputRequest) -> list[str]:
+    value = request.extra_info.get("required_terms", [])
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def _grounding_sources(attachments: list[str]) -> dict[str, str]:
+    sources: dict[str, str] = {}
+    readable = {".txt", ".md", ".json", ".jsonl", ".csv", ".tsv", ".yaml", ".yml"}
+    for item in attachments:
+        path = Path(item)
+        if not path.is_file():
+            continue
+        if path.suffix.lower() in readable:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        elif path.suffix.lower() == ".pdf":
+            text = "\n".join(page.extract_text() or "" for page in PdfReader(path).pages)
+        else:
+            continue
+        sources[path.resolve().as_uri()] = text
+    return sources
+
+
+def _file_uri_path(uri: str) -> Path:
+    parsed = urlparse(uri)
+    return Path(unquote(parsed.path)) if parsed.scheme == "file" else Path(uri)
+
+
+def _manifest_render_paths(manifest) -> list[Path]:
+    return [
+        _file_uri_path(reference.uri)
+        for name, reference in sorted(manifest.output_files.items())
+        if name.startswith("pptx_render_slide_")
+    ]
+
+
+def _efficiency_usage(agents, *, repair_steps: int, latency_ms: float) -> EfficiencyUsage:
+    messages = [message for agent in agents for message in agent.chat_history]
+    return EfficiencyUsage(
+        tokens=sum(agent.cost.total for agent in agents),
+        model_calls=sum(message.role == Role.ASSISTANT for message in messages),
+        tool_calls=sum(len(message.tool_calls or []) for message in messages),
+        repair_steps=repair_steps,
+        latency_ms=latency_ms,
+    )
 
 
 class AgentLoop:
@@ -79,6 +157,8 @@ class AgentLoop:
         Yields:
             ChatMessage or final output path (str). Outline path stored in intermediate_output["outline"].
         """
+        run_started = time.perf_counter()
+        participating_agents = []
         if not self.config.design_agent.is_multimodal and self.config.heavy_reflect:
             debug(
                 "Reflective design requires a multimodal LLM in the design agent, reflection will only enable on textual state."
@@ -416,6 +496,7 @@ class AgentLoop:
                     max_turns=self.config.slidex.max_episode_steps,
                 )
                 self.agent = self.planner
+                participating_agents.append(self.planner)
                 self.planner_gen = self.planner.loop(request)
                 try:
                     async for msg in self.planner_gen:
@@ -441,6 +522,7 @@ class AgentLoop:
                 max_turns=self.config.slidex.max_episode_steps,
             )
             self.agent = self.research_agent
+            participating_agents.append(self.research_agent)
             try:
                 async for msg in self.research_agent.loop(
                     request, self.intermediate_output.get("outline", None)
@@ -472,6 +554,7 @@ class AgentLoop:
                     max_turns=self.config.slidex.max_episode_steps,
                 )
                 self.agent = self.pptagent
+                participating_agents.append(self.pptagent)
                 try:
                     async for msg in self.pptagent.loop(request, str(md_file)):
                         if isinstance(msg, str):
@@ -492,6 +575,50 @@ class AgentLoop:
                 finally:
                     self.pptagent.save_history()
                     self.save_results()
+                export_service = FinalExportService()
+                export_manifest = await export_service.validate_pptx(
+                    pptx_file,
+                    expected_page_count=_exact_page_count(request.num_pages),
+                )
+                export_manifest_path = (
+                    self.workspace / ".history" / "slidex" / "export_manifest.json"
+                )
+                export_service.save_manifest(export_manifest, export_manifest_path)
+                self.intermediate_output["artifact_manifest"] = export_manifest_path
+                self.intermediate_output["export_status"] = export_manifest.status.value
+                if export_manifest.status != FinalArtifactStatus.PPTX_RENDER_VALIDATED:
+                    raise RuntimeError(
+                        "final PPTX validation failed: "
+                        + (export_manifest.failure_reason or export_manifest.status.value)
+                    )
+                render_paths = _manifest_render_paths(export_manifest)
+                inspected_artifacts = {
+                    artifact.declared_ir.slide_id: artifact
+                    for artifact in pptx_to_slide_artifacts(
+                        pptx_file, render_paths, export_manifest.fidelity_report.renderer
+                    )
+                }
+                deck_report = await DeckInspector(
+                    HybridCritic(
+                        self.config.slidex,
+                        critic_model=self.config.critic_model,
+                        semantic_model=self.config.semantic_model,
+                    ),
+                    self.config.slidex,
+                ).inspect(
+                    list(inspected_artifacts.values()),
+                    approved_outline=_outline_titles(
+                        self.intermediate_output.get("outline")
+                    ),
+                    task=request.instruction,
+                )
+                deck_report_path = (
+                    self.workspace / ".history" / "slidex" / "deck_report.json"
+                )
+                deck_report_path.parent.mkdir(parents=True, exist_ok=True)
+                deck_report_path.write_text(deck_report.model_dump_json(indent=2))
+                self.intermediate_output["deck_inspection"] = deck_report_path
+                enforce_export_gate(deck_report)
             else:
                 self.designagent = Design(
                     self.config,
@@ -501,6 +628,7 @@ class AgentLoop:
                     max_turns=self.config.slidex.max_episode_steps,
                 )
                 self.agent = self.designagent
+                participating_agents.append(self.designagent)
                 try:
                     async for msg in self.designagent.loop(request, str(md_file)):
                         if isinstance(msg, str):
@@ -534,7 +662,13 @@ class AgentLoop:
                         semantic_model=self.config.semantic_model,
                     ),
                     self.config.slidex,
-                ).inspect(list(inspected_artifacts.values()))
+                ).inspect(
+                    list(inspected_artifacts.values()),
+                    approved_outline=_outline_titles(
+                        self.intermediate_output.get("outline")
+                    ),
+                    task=request.instruction,
+                )
                 deck_report_path = (
                     self.workspace / ".history" / "slidex" / "deck_report.json"
                 )
@@ -590,6 +724,59 @@ class AgentLoop:
                 self.intermediate_output["pptx"] = str(pptx_path)
                 self.intermediate_output["final"] = str(pptx_path)
                 msg = pptx_path
+
+            final_pptx = Path(self.intermediate_output["pptx"])
+            slide_text, _, _, _ = extract_pptx_structure(
+                final_pptx, len(inspected_artifacts)
+            )
+            task_outcome = build_task_outcome(
+                instruction=request.instruction,
+                requested_pages=request.num_pages,
+                actual_page_count=len(slide_text),
+                slide_text=slide_text,
+                outline_titles=_outline_titles(
+                    self.intermediate_output.get("outline")
+                ),
+                required_terms=_required_terms(request),
+                language=self.language,
+            )
+            grounding_report = GroundingEvaluator().evaluate(
+                slide_text, _grounding_sources(request.attachments)
+            )
+            evaluation_dir = self.workspace / ".history" / "slidex"
+            evaluation_dir.mkdir(parents=True, exist_ok=True)
+            task_path = evaluation_dir / "task_outcome.json"
+            task_path.write_text(task_outcome.model_dump_json(indent=2))
+            grounding_path = evaluation_dir / "grounding_report.json"
+            grounding_path.write_text(grounding_report.model_dump_json(indent=2))
+            usage = _efficiency_usage(
+                participating_agents,
+                repair_steps=sum(max(0, value - 1) for value in inspection_rounds.values()),
+                latency_ms=(time.perf_counter() - run_started) * 1000,
+            )
+            reward = RewardEngine(
+                RewardConfig.from_slidex_config(self.config.slidex)
+            ).compute(
+                list(deck_report.page_reports.values()),
+                artifact_ids=[item.artifact_id for item in inspected_artifacts.values()],
+                export=export_manifest,
+                task=task_outcome,
+                grounding=grounding_report,
+                usage=usage,
+                policy_violations=deck_report.policy_violations,
+            )
+            reward_path = evaluation_dir / "reward.json"
+            reward_path.write_text(reward.model_dump_json(indent=2))
+            efficiency_path = evaluation_dir / "efficiency.json"
+            efficiency_path.write_text(usage.model_dump_json(indent=2))
+            self.intermediate_output.update(
+                {
+                    "task_outcome": task_path,
+                    "grounding_report": grounding_path,
+                    "reward": reward_path,
+                    "efficiency": efficiency_path,
+                }
+            )
             self.save_results()
             debug(f"DeepPresenter finished, final output at: {msg}")
             yield msg

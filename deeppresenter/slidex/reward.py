@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
 from collections.abc import Sequence
 from enum import StrEnum
@@ -19,6 +20,7 @@ from deeppresenter.slidex.models import (
     InspectionReport,
     InspectionResult,
     InspectionStatus,
+    GroundingReport,
     PolicyViolation,
     RepairAction,
     RepairExecutionStatus,
@@ -86,11 +88,82 @@ class TaskOutcome(SlidexModel):
     user_constraints: dict[str, bool] = Field(default_factory=dict)
 
 
+def parse_page_range(value: str | None) -> tuple[int | None, int | None]:
+    """Parse a requested page count such as ``8`` or ``5-10``."""
+    if not value:
+        return None, None
+    numbers = [int(item) for item in re.findall(r"\d+", value)]
+    if not numbers:
+        return None, None
+    if len(numbers) == 1:
+        return numbers[0], numbers[0]
+    lower, upper = numbers[0], numbers[1]
+    return min(lower, upper), max(lower, upper)
+
+
+def build_task_outcome(
+    *,
+    instruction: str,
+    requested_pages: str | None,
+    actual_page_count: int,
+    slide_text: Sequence[Sequence[str]],
+    outline_titles: Sequence[str] = (),
+    required_terms: Sequence[str] = (),
+    language: Literal["zh", "en"] | None = None,
+) -> TaskOutcome:
+    """Build deterministic task checks from the request and final deck text."""
+    lower, upper = parse_page_range(requested_pages)
+    expected = lower if lower is not None and lower == upper else None
+    flattened = "\n".join(text for page in slide_text for text in page).casefold()
+    outline_checks = {
+        title: _contains_normalized(flattened, title) for title in outline_titles if title.strip()
+    }
+    content_checks = {
+        term: _contains_normalized(flattened, term) for term in required_terms if term.strip()
+    }
+    constraints: dict[str, bool] = {}
+    if lower is not None and upper is not None:
+        constraints["page_range"] = lower <= actual_page_count <= upper
+    if language == "zh" and flattened:
+        constraints["language:zh"] = bool(re.search(r"[\u4e00-\u9fff]", flattened))
+    elif language == "en" and flattened:
+        latin = len(re.findall(r"[a-z]", flattened))
+        han = len(re.findall(r"[\u4e00-\u9fff]", flattened))
+        constraints["language:en"] = latin >= han
+    constraints["non_empty_instruction"] = bool(instruction.strip())
+    return TaskOutcome(
+        actual_page_count=actual_page_count,
+        expected_page_count=expected,
+        outline_checks=outline_checks,
+        required_content=content_checks,
+        user_constraints=constraints,
+    )
+
+
+def _contains_normalized(haystack: str, needle: str) -> bool:
+    def tokens(value: str) -> list[str]:
+        return re.findall(r"[\w\u4e00-\u9fff]+", value.casefold())
+
+    normalized = " ".join(tokens(needle))
+    if not normalized:
+        return True
+    return normalized in " ".join(tokens(haystack))
+
+
 class TaskReward(SlidexModel):
     score: float = Field(ge=-1, le=1)
     passed: int = Field(ge=0)
     total: int = Field(ge=0)
     failed_requirements: list[str] = Field(default_factory=list)
+
+
+class GroundingReward(SlidexModel):
+    available: bool
+    score: float = Field(ge=-1, le=1)
+    supported_rate: float = Field(ge=0, le=1)
+    contradiction_rate: float = Field(ge=0, le=1)
+    unsupported_rate: float = Field(ge=0, le=1)
+    evidence_count: int = Field(ge=0)
 
 
 class EfficiencyUsage(SlidexModel):
@@ -126,6 +199,7 @@ class RewardVector(SlidexModel):
     semantic_reward: DefectReward
     fidelity_reward: FidelityReward
     task_reward: TaskReward
+    grounding_reward: GroundingReward
     efficiency_reward: EfficiencyReward
     policy_violation_penalty: float = Field(ge=-1, le=0)
     repair_delta_reward: RepairDeltaReward | None = None
@@ -163,9 +237,10 @@ class RewardConfig(SlidexModel):
         default_factory=lambda: {
             "validity": 0.20,
             "geometry": 0.25,
-            "semantic": 0.20,
+            "semantic": 0.15,
             "fidelity": 0.15,
-            "task": 0.20,
+            "task": 0.15,
+            "grounding": 0.15,
         }
     )
     efficiency_budgets: EfficiencyUsage = Field(
@@ -180,7 +255,9 @@ class RewardConfig(SlidexModel):
 
     @model_validator(mode="after")
     def validate_weights(self) -> RewardConfig:
-        expected = {"validity", "geometry", "semantic", "fidelity", "task"}
+        expected = {
+            "validity", "geometry", "semantic", "fidelity", "task", "grounding"
+        }
         if set(self.weights) != expected or any(value < 0 for value in self.weights.values()):
             raise ValueError(f"weights must contain non-negative values for {sorted(expected)}")
         if sum(self.weights.values()) <= 0:
@@ -210,7 +287,7 @@ class RewardEngine:
     """Compute replayable rewards without invoking inspectors or models."""
 
     FORMULA = (
-        "gate(valid export) ? weighted(validity, geometry, semantic, fidelity, task) "
+        "gate(valid export) ? weighted(validity, geometry, semantic, fidelity, task, grounding) "
         "+ efficiency + policy + repair_delta - reliability : terminal_hard_negative"
     )
 
@@ -225,6 +302,7 @@ class RewardEngine:
         export: ExportManifest | None = None,
         validity: ValiditySignals | None = None,
         task: TaskOutcome | None = None,
+        grounding: GroundingReport | None = None,
         usage: EfficiencyUsage | None = None,
         policy_violations: Sequence[PolicyViolation] = (),
         before_reports: Sequence[InspectionReport] = (),
@@ -245,6 +323,7 @@ class RewardEngine:
         validity_reward = _validity_reward(reports, export, validity)
         fidelity = _fidelity_reward(export)
         task_reward = _task_reward(task, export)
+        grounding_reward = _grounding_reward(grounding)
         efficiency = _efficiency_reward(usage or EfficiencyUsage(), self.config)
         policy_penalty = -min(
             1,
@@ -262,6 +341,7 @@ class RewardEngine:
             semantic_reward=semantic,
             fidelity_reward=fidelity,
             task_reward=task_reward,
+            grounding_reward=grounding_reward,
             efficiency_reward=efficiency,
             policy_violation_penalty=policy_penalty,
             repair_delta_reward=repair_delta,
@@ -283,6 +363,7 @@ class RewardEngine:
             ),
             "validity_reward": sorted(result_ids),
             "fidelity_reward": fidelity.evidence_ids,
+            "grounding_reward": [],
         }
         payload = {
             "artifacts": ids,
@@ -322,6 +403,7 @@ class RewardEngine:
             "semantic": vector.semantic_reward.score,
             "fidelity": vector.fidelity_reward.score,
             "task": vector.task_reward.score,
+            "grounding": vector.grounding_reward.score,
         }
         weighted = sum(self.config.weights[key] * values[key] for key in values)
         weighted /= sum(self.config.weights.values())
@@ -498,6 +580,27 @@ def _task_reward(task: TaskOutcome | None, export: ExportManifest | None) -> Tas
         passed=passed,
         total=total,
         failed_requirements=sorted(key for key, value in checks.items() if not value),
+    )
+
+
+def _grounding_reward(report: GroundingReport | None) -> GroundingReward:
+    if report is None or not report.findings or report.source_count == 0:
+        return GroundingReward(
+            available=False,
+            score=0,
+            supported_rate=0,
+            contradiction_rate=0,
+            unsupported_rate=0,
+            evidence_count=0,
+        )
+    score = report.supported_rate - report.unsupported_rate - 2 * report.contradiction_rate
+    return GroundingReward(
+        available=True,
+        score=max(-1, min(1, round(score, 6))),
+        supported_rate=report.supported_rate,
+        contradiction_rate=report.contradiction_rate,
+        unsupported_rate=report.unsupported_rate,
+        evidence_count=len(report.findings),
     )
 
 

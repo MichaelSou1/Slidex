@@ -1,4 +1,5 @@
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,6 @@ from deeppresenter.slidex.export import (
     LibreOfficeRenderer,
     RenderFidelityValidator,
     extract_html_text,
-    extract_pptx_structure,
 )
 from deeppresenter.slidex.models import (
     DefectClass,
@@ -176,3 +176,40 @@ async def test_strict_export_rerender_and_traceable_manifest(tmp_path: Path) -> 
     assert manifest.fidelity_report
     assert not manifest.fidelity_report.export_fidelity_failure
     assert not manifest.hard_penalty
+
+@pytest.mark.asyncio
+async def test_native_pptx_validation_is_backend_independent(tmp_path: Path) -> None:
+    from deeppresenter.slidex.export import FinalExportService, pptx_to_slide_artifacts
+    from deeppresenter.slidex.models import ExportCommandRecord, RendererInfo
+
+    pptx = tmp_path / "native.pptx"
+    with zipfile.ZipFile(pptx, "w") as archive:
+        archive.writestr(
+            "ppt/slides/slide1.xml",
+            '<p:sld xmlns:p="p" xmlns:a="a"><a:t>Native deck</a:t></p:sld>',
+        )
+    page = tmp_path / "page.png"
+    Image.new("RGB", (1280, 720), "white").save(page)
+    pdf = tmp_path / "native.pdf"
+    pdf.write_bytes(b"pdf")
+
+    class Renderer:
+        def info(self) -> RendererInfo:
+            return RendererInfo(name="fake", version="1")
+
+        async def render(self, _pptx: Path, _output: Path):
+            return pdf, [page], ExportCommandRecord(
+                executable="fake",
+                version="1",
+                return_code=0,
+                duration_ms=1,
+            )
+
+    service = FinalExportService(renderer=Renderer())
+    manifest = await service.validate_pptx(pptx, expected_page_count=1)
+    assert manifest.status == FinalArtifactStatus.PPTX_RENDER_VALIDATED
+    artifacts = pptx_to_slide_artifacts(
+        pptx, [page], manifest.fidelity_report.renderer
+    )
+    assert artifacts[0].declared_ir.elements[0].text == "Native deck"
+    assert artifacts[0].trust.value == "image_only"

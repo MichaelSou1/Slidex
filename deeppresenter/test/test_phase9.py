@@ -232,3 +232,49 @@ def test_matched_pair_calibration_reports_bias_and_separates_provider() -> None:
         RewardCalibrator(RewardConfig()).evaluate(
             examples, split=EvaluationSplit.DEVELOPMENT
         )
+
+@pytest.mark.unit
+def test_task_outcome_checks_page_range_outline_terms_and_language() -> None:
+    from deeppresenter.slidex.reward import build_task_outcome, parse_page_range
+
+    assert parse_page_range("5-10") == (5, 10)
+    outcome = build_task_outcome(
+        instruction="Explain Slidex",
+        requested_pages="2-4",
+        actual_page_count=2,
+        slide_text=[["Slidex overview"], ["Evaluation architecture"]],
+        outline_titles=["Overview"],
+        required_terms=["architecture"],
+        language="en",
+    )
+    assert outcome.user_constraints["page_range"]
+    assert outcome.outline_checks["Overview"]
+    assert outcome.required_content["architecture"]
+    assert outcome.user_constraints["language:en"]
+
+
+@pytest.mark.unit
+def test_grounding_evaluator_is_conservative_and_traceable() -> None:
+    from deeppresenter.slidex.grounding import GroundingEvaluator
+    from deeppresenter.slidex.models import GroundingStatus
+
+    report = GroundingEvaluator().evaluate(
+        [["Revenue increased by 25% in 2025", "Unsupported market forecast reaches 80%"]],
+        {"file:///source.txt": "Revenue increased by 25% in 2025 according to the report."},
+    )
+    assert report.findings[0].status == GroundingStatus.SUPPORTED
+    assert report.findings[0].source_uris == ["file:///source.txt"]
+    assert report.findings[1].status == GroundingStatus.NOT_ENOUGH_EVIDENCE
+    assert report.contradiction_rate == 0
+    reward = RewardEngine().compute(
+        [_report("artifact", [_result(DefectClass.G1, InspectionStatus.PASS)])],
+        grounding=report,
+    )
+    assert reward.vector.grounding_reward.available
+    assert reward.vector.grounding_reward.evidence_count == 2
+    unavailable = GroundingEvaluator().evaluate([["Claim reaches 90%"]], {})
+    no_source_reward = RewardEngine().compute(
+        [_report("artifact", [_result(DefectClass.G1, InspectionStatus.PASS)])],
+        grounding=unavailable,
+    )
+    assert not no_source_reward.vector.grounding_reward.available

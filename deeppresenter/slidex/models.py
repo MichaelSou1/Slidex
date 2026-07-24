@@ -273,6 +273,29 @@ class ExportManifest(SlidexModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class GroundingStatus(StrEnum):
+    SUPPORTED = "supported"
+    CONTRADICTED = "contradicted"
+    NOT_ENOUGH_EVIDENCE = "not_enough_evidence"
+
+
+class GroundingFinding(SlidexModel):
+    claim: str = Field(min_length=1)
+    slide_id: str = Field(min_length=1)
+    status: GroundingStatus
+    evidence: list[str] = Field(default_factory=list)
+    source_uris: list[str] = Field(default_factory=list)
+
+
+class GroundingReport(SlidexModel):
+    findings: list[GroundingFinding] = Field(default_factory=list)
+    source_count: int = Field(default=0, ge=0)
+    supported_rate: float = Field(ge=0, le=1)
+    contradiction_rate: float = Field(ge=0, le=1)
+    unsupported_rate: float = Field(ge=0, le=1)
+    coverage: float = Field(ge=0, le=1)
+
+
 class MutationFidelityResult(SlidexModel):
     """Observable survival of one mutation after the final renderer."""
 

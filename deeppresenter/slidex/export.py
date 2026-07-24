@@ -19,6 +19,8 @@ from PIL import Image, ImageChops, ImageStat
 
 from deeppresenter.slidex.models import (
     ArtifactReference,
+    ArtifactTrust,
+    DeclaredSlideIR,
     DefectClass,
     ExportCommandRecord,
     ExportManifest,
@@ -27,6 +29,10 @@ from deeppresenter.slidex.models import (
     MutationFidelityResult,
     RenderFidelityReport,
     RendererInfo,
+    Provenance,
+    RenderArtifact,
+    SlideArtifact,
+    SlideElement,
 )
 from deeppresenter.utils.webview import convert_html_to_pptx
 
@@ -387,6 +393,116 @@ class FinalExportService:
                 manifest.commands.append(command)
         return manifest
 
+    async def validate_pptx(
+        self,
+        pptx_path: Path,
+        *,
+        expected_page_count: int | None = None,
+        source_uris: Sequence[str] = (),
+    ) -> ExportManifest:
+        """Validate a PPTX produced by any backend through the native renderer.
+
+        Unlike :meth:`export`, this path has no HTML reference. It therefore gates
+        structural integrity, renderability, page count, embedded assets, and final
+        render anomalies without inventing a source-fidelity score.
+        """
+        manifest = ExportManifest(
+            export_id=f"export-{uuid.uuid4().hex[:12]}",
+            status=FinalArtifactStatus.PPTX_EXPORTED,
+            source_uris=list(source_uris) or [pptx_path.resolve().as_uri()],
+            strict_validation=True,
+        )
+        try:
+            if not pptx_path.is_file() or pptx_path.suffix.lower() != ".pptx":
+                raise ExportValidationError(f"invalid PPTX path: {pptx_path}")
+            with zipfile.ZipFile(pptx_path) as archive:
+                slide_names = [
+                    name
+                    for name in archive.namelist()
+                    if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)
+                ]
+            page_count = len(slide_names)
+            if page_count == 0:
+                raise ExportValidationError("PPTX contains no slides")
+            manifest.output_files["pptx"] = artifact_reference(
+                pptx_path,
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            )
+            render_dir = pptx_path.parent / f"{pptx_path.stem}_pptx_render"
+            pdf_path, pages, command = await self.renderer.render(pptx_path, render_dir)
+            manifest.commands.append(command)
+            manifest.output_files["pptx_render_pdf"] = artifact_reference(
+                pdf_path, "application/pdf"
+            )
+            for index, page in enumerate(pages, start=1):
+                manifest.output_files[f"pptx_render_slide_{index:02d}"] = (
+                    artifact_reference(page, "image/png")
+                )
+            texts, fonts, drifts, missing_images = extract_pptx_structure(
+                pptx_path, page_count
+            )
+            reasons: list[str] = []
+            expected = expected_page_count if expected_page_count is not None else page_count
+            if len(pages) != page_count:
+                reasons.append(f"render_page_count_mismatch:{page_count}!={len(pages)}")
+            if expected_page_count is not None and page_count != expected_page_count:
+                reasons.append(f"expected_page_count_mismatch:{expected_page_count}!={page_count}")
+            page_results: list[FidelityPageResult] = []
+            renderer = self.renderer.info()
+            for index, page in enumerate(pages):
+                with Image.open(page) as image:
+                    size = image.size
+                findings = final_render_findings(page)
+                asset_failures = missing_images[index] if index < len(missing_images) else 0
+                passed = asset_failures == 0 and not findings
+                slide_id = f"slide_{index + 1:02d}"
+                if not passed:
+                    reasons.append(f"{slide_id}:native_validation_failure")
+                page_results.append(
+                    FidelityPageResult(
+                        slide_id=slide_id,
+                        html_render_uri=page.resolve().as_uri(),
+                        pptx_render_uri=page.resolve().as_uri(),
+                        html_size=size,
+                        pptx_size=size,
+                        pixel_difference=0,
+                        perceptual_similarity=1,
+                        text_presence=1,
+                        missing_images=asset_failures,
+                        font_substitutions=fonts[index] if index < len(fonts) else [],
+                        position_drift=drifts[index] if index < len(drifts) else {},
+                        final_render_findings=findings,
+                        passed=passed,
+                    )
+                )
+            manifest.fidelity_report = RenderFidelityReport(
+                page_results=page_results,
+                expected_page_count=expected,
+                actual_page_count=len(pages),
+                page_count_matches=len(pages) == expected,
+                renderer=renderer,
+                export_fidelity_failure=bool(reasons),
+                failure_reasons=reasons,
+            )
+            if reasons:
+                manifest.status = FinalArtifactStatus.INVALID_ARTIFACT
+                manifest.hard_penalty = True
+                manifest.failure_reason = "; ".join(reasons)
+            else:
+                manifest.status = FinalArtifactStatus.PPTX_RENDER_VALIDATED
+        except ExportCapabilityError as exc:
+            manifest.status = FinalArtifactStatus.CAPABILITY_ERROR
+            manifest.hard_penalty = True
+            manifest.failure_reason = str(exc)
+        except Exception as exc:
+            manifest.status = FinalArtifactStatus.INVALID_ARTIFACT
+            manifest.hard_penalty = True
+            manifest.failure_reason = str(exc)
+            command = getattr(exc, "command", None)
+            if command is not None:
+                manifest.commands.append(command)
+        return manifest
+
     @staticmethod
     def save_manifest(manifest: ExportManifest, path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -468,6 +584,60 @@ def extract_html_text(path: Path) -> list[str]:
     ]
 
 
+def pptx_to_slide_artifacts(
+    pptx_path: Path,
+    page_renders: Sequence[Path],
+    renderer: RendererInfo,
+) -> list[SlideArtifact]:
+    """Create backend-neutral image artifacts from a native PPTX."""
+    texts, _, _, _ = extract_pptx_structure(pptx_path, len(page_renders))
+    source_hash = hashlib.sha256(pptx_path.read_bytes()).hexdigest()
+    artifacts: list[SlideArtifact] = []
+    for index, render_path in enumerate(page_renders):
+        with Image.open(render_path) as image:
+            width, height = image.size
+        slide_id = f"slide_{index + 1:02d}"
+        elements = [
+            SlideElement(
+                element_id=f"{slide_id}-text-{text_index + 1}",
+                tag="text",
+                element_type="text",
+                semantic_role="title" if text_index == 0 else "body",
+                text=text,
+            )
+            for text_index, text in enumerate(texts[index])
+            if text.strip()
+        ]
+        render_hash = hashlib.sha256(render_path.read_bytes()).hexdigest()
+        artifacts.append(
+            SlideArtifact(
+                artifact_id=f"native-{source_hash[:12]}-{index + 1:02d}",
+                source_uri=pptx_path.resolve().as_uri(),
+                source_sha256=source_hash,
+                declared_ir=DeclaredSlideIR(
+                    slide_id=slide_id,
+                    page_width=width,
+                    page_height=height,
+                    elements=elements,
+                ),
+                renders=[
+                    RenderArtifact(
+                        kind="pptx_rerender",
+                        uri=render_path.resolve().as_uri(),
+                        sha256=render_hash,
+                        width=width,
+                        height=height,
+                        renderer=renderer,
+                    )
+                ],
+                provenance=Provenance(creation_action="validate_native_pptx"),
+                trust=ArtifactTrust.IMAGE_ONLY,
+                missing_bookkeeping=["computed_ir", "native_element_geometry"],
+            )
+        )
+    return artifacts
+
+
 def extract_pptx_structure(
     path: Path, page_count: int
 ) -> tuple[list[list[str]], list[list[str]], list[dict[str, float]], list[int]]:
@@ -477,16 +647,6 @@ def extract_pptx_structure(
     missing_images = [0 for _ in range(page_count)]
     with zipfile.ZipFile(path) as archive:
         names = set(archive.namelist())
-        theme_fonts = (
-            set(
-                re.findall(
-                    r'typeface="([^"]+)"',
-                    archive.read("ppt/theme/theme1.xml").decode(errors="ignore"),
-                )
-            )
-            if "ppt/theme/theme1.xml" in names
-            else set()
-        )
         for index in range(page_count):
             slide_name = f"ppt/slides/slide{index + 1}.xml"
             if slide_name not in names:
@@ -495,12 +655,6 @@ def extract_pptx_structure(
             texts[index] = [
                 node.text or "" for node in root.iter() if node.tag.endswith("}t")
             ]
-            used_fonts = {
-                node.attrib["typeface"]
-                for node in root.iter()
-                if node.tag.endswith(("}latin", "}ea", "}cs"))
-                and node.attrib.get("typeface")
-            }
             # The PPTX XML records requested fonts, not renderer substitutions.
             # Treating every non-theme font as substituted rejects valid exports.
             fonts[index] = []
@@ -532,12 +686,6 @@ def final_render_findings(path: Path) -> list[str]:
     with Image.open(path) as image:
         rgb = image.convert("RGB")
         width, height = rgb.size
-        border = [
-            rgb.crop((0, 0, width, 2)),
-            rgb.crop((0, height - 2, width, height)),
-            rgb.crop((0, 0, 2, height)),
-            rgb.crop((width - 2, 0, width, height)),
-        ]
         # Full-bleed backgrounds and gradients legitimately vary at the edge.
         # Boundary clipping is already checked from exported element geometry;
         # edge-color variance alone is not evidence of clipped content.
