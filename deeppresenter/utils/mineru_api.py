@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path
@@ -154,29 +155,63 @@ async def _raise_parsedoc_error(resp: aiohttp.ClientResponse) -> None:
     raise RuntimeError(payload)
 
 
-def _extract_zip_bytes(content: bytes, output_path: str) -> None:
-    """Extract zip bytes into output_path."""
+def _extract_zip_bytes(
+    content: bytes,
+    output_path: str,
+    *,
+    max_files: int = 10_000,
+    max_uncompressed_bytes: int = 1_000_000_000,
+    max_compression_ratio: float = 100.0,
+) -> None:
+    """Extract a bounded archive without zip-slip, symlink, or zip-bomb entries."""
+    destination = Path(output_path).resolve()
+    destination.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
         tmp.write(content)
-        zip_path = tmp.name
+        zip_path = Path(tmp.name)
 
-    with zipfile.ZipFile(zip_path, "r") as zip_ref:
-        all_names = [name for name in zip_ref.namelist() if name.strip()]
-        top_level = {name.split("/", 1)[0] for name in all_names}
+    try:
+        with zipfile.ZipFile(zip_path, "r") as archive:
+            members = [
+                member for member in archive.infolist() if member.filename.strip()
+            ]
+            if len(members) > max_files:
+                raise ValueError("archive contains too many entries")
+            total_size = sum(member.file_size for member in members)
+            if total_size > max_uncompressed_bytes:
+                raise ValueError("archive exceeds uncompressed size limit")
+            for member in members:
+                compressed = max(member.compress_size, 1)
+                if member.file_size / compressed > max_compression_ratio:
+                    raise ValueError(f"suspicious compression ratio: {member.filename}")
+                mode = member.external_attr >> 16
+                if (mode & 0o170000) == 0o120000:
+                    raise ValueError(f"archive symlink is forbidden: {member.filename}")
 
-        if len(top_level) == 1 and all("/" in name for name in all_names):
-            prefix = list(top_level)[0] + "/"
-        else:
-            prefix = ""
-
-        for member in zip_ref.infolist():
-            if not member.is_dir():
-                rel_path = (
+            names = [member.filename for member in members]
+            for name in names:
+                path = Path(name)
+                if path.is_absolute() or ".." in path.parts:
+                    raise ValueError(f"archive path escapes output directory: {name}")
+            top_level = {name.split("/", 1)[0] for name in names}
+            prefix = (
+                next(iter(top_level)) + "/"
+                if len(top_level) == 1 and all("/" in name for name in names)
+                else ""
+            )
+            for member in members:
+                if member.is_dir():
+                    continue
+                relative = (
                     member.filename.removeprefix(prefix) if prefix else member.filename
                 )
-                dest_path = os.path.join(output_path, rel_path)
-                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                with zip_ref.open(member) as src, open(dest_path, "wb") as dst:
-                    dst.write(src.read())
-
-    os.unlink(zip_path)
+                target = (destination / relative).resolve()
+                if not target.is_relative_to(destination):
+                    raise ValueError(
+                        f"archive path escapes output directory: {member.filename}"
+                    )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source, target.open("wb") as sink:
+                    shutil.copyfileobj(source, sink)
+    finally:
+        zip_path.unlink(missing_ok=True)

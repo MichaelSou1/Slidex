@@ -21,12 +21,17 @@ def _register_commands() -> None:
     if app.registered_commands:
         return
     from .commands import clean, config, generate, onboard, serve
+    from deeppresenter.eval.cli import app as eval_app
 
     app.command()(onboard)
     app.command()(serve)
     app.command()(generate)
     app.command()(config)
     app.command()(clean)
+    app.add_typer(eval_app, name="eval")
+
+
+_register_commands()
 
 
 def main() -> None:

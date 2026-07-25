@@ -191,6 +191,7 @@ def test_workspace_tools_are_scoped_and_record_command_output(tmp_path: Path) ->
     with pytest.raises(ValueError, match="escapes workspace"):
         tools.read_file("../outside.txt")
 
+
 @pytest.mark.unit
 def test_generate_cli_rejects_invalid_output_before_onboarding(tmp_path: Path) -> None:
     from typer.testing import CliRunner
@@ -333,6 +334,7 @@ def test_generate_cli_fails_when_agent_returns_no_artifact(
     assert "Generation completed without producing a PPTX file" in result.output
     assert "Success!" not in result.output
 
+
 @pytest.mark.unit
 def test_onboard_validation_failure_preserves_existing_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -364,13 +366,15 @@ def test_onboard_validation_failure_preserves_existing_config(
     monkeypatch.setattr(
         commands,
         "prompt_llm_config",
-        lambda *args, **kwargs: {
-            "base_url": "http://localhost:1/v1",
-            "model": "test",
-            "api_key": "test",
-        }
-        if not kwargs.get("optional")
-        else None,
+        lambda *args, **kwargs: (
+            {
+                "base_url": "http://localhost:1/v1",
+                "model": "test",
+                "api_key": "test",
+            }
+            if not kwargs.get("optional")
+            else None
+        ),
     )
     monkeypatch.setattr(commands.Confirm, "ask", lambda *args, **kwargs: False)
     monkeypatch.setattr(

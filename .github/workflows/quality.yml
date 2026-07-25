@@ -11,7 +11,35 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install Python dependencies
+        run: uv sync --frozen
+      - name: Run credential-free unit and client-contract tests
+        run: uv run pytest -q -m "unit and not llm and not parse and not benchmark"
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install Chromium test runtime
+        run: |
+          uv sync --frozen
+          uv run playwright install --with-deps chromium
+      - name: Run browser tests
+        run: uv run pytest -q -m browser
+
+  export:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -24,21 +52,28 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: deeppresenter/html2pptx/package-lock.json
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libreoffice poppler-utils
-      - name: Install Python and Node dependencies
+      - name: Install export runtime
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libreoffice poppler-utils
           uv sync --frozen
           npm ci --prefix deeppresenter/html2pptx
           uv run playwright install --with-deps chromium
-      - name: Run offline test suite
-        run: uv run pytest -q -m "not llm and not parse"
-      - name: Build distributions
-        run: uv build
+      - name: Run export tests
+        run: uv run pytest -q -m export
+
+  package:
+    needs: [unit, browser, export]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build
       - name: Verify wheel entrypoints
         run: |
           uv venv --python 3.11 .package-test
           uv pip install --python .package-test/bin/python dist/*.whl
+          .package-test/bin/slidex --help
           .package-test/bin/pptagent --help
-          .package-test/bin/deeppresenter --help
           .package-test/bin/python -c "import deeppresenter, pptagent.mcp_server"

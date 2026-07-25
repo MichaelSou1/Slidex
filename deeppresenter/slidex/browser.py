@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from collections.abc import Iterable
@@ -10,8 +11,15 @@ from pathlib import Path
 from typing import Any
 
 from bs4 import BeautifulSoup, Tag
-from playwright.async_api import Page, async_playwright
+from playwright.async_api import (
+    Browser,
+    BrowserContext,
+    Page,
+    Playwright,
+    async_playwright,
+)
 
+from deeppresenter.slidex.cache import ContentCache
 from deeppresenter.slidex.models import (
     BoundingBox,
     ComputedSlideElement,
@@ -224,12 +232,84 @@ def extract_declared_ir(
     )
 
 
+class BrowserPool:
+    """Reuse one Chromium process while bounding simultaneously open pages."""
+
+    def __init__(self, *, max_pages: int = 4) -> None:
+        if max_pages < 1:
+            raise ValueError("max_pages must be positive")
+        self._semaphore = asyncio.Semaphore(max_pages)
+        self._playwright: Playwright | None = None
+        self._browser: Browser | None = None
+
+    async def start(self) -> BrowserPool:
+        if self._browser is None:
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(
+                headless=True, args=["--disable-gpu", "--no-sandbox"]
+            )
+        return self
+
+    async def context(self, *, width: int, height: int) -> BrowserContext:
+        await self.start()
+        await self._semaphore.acquire()
+        assert self._browser is not None
+        try:
+            context = await self._browser.new_context(
+                viewport={"width": width, "height": height},
+                device_scale_factor=1,
+                locale="en-US",
+                timezone_id="UTC",
+                color_scheme="light",
+                reduced_motion="reduce",
+            )
+        except BaseException:
+            self._semaphore.release()
+            raise
+        return context
+
+    async def release(self, context: BrowserContext) -> None:
+        try:
+            await context.close()
+        finally:
+            self._semaphore.release()
+
+    @property
+    def version(self) -> str:
+        if self._browser is None:
+            raise RuntimeError("browser pool is not started")
+        return self._browser.version
+
+    async def close(self) -> None:
+        if self._browser is not None:
+            await self._browser.close()
+            self._browser = None
+        if self._playwright is not None:
+            await self._playwright.stop()
+            self._playwright = None
+
+    async def __aenter__(self) -> BrowserPool:
+        return await self.start()
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
+
+
 class BrowserObserver:
     """Create computed IR, PNG, PDF, and an optional overlay from one page load."""
 
-    def __init__(self, *, width: int = 1280, height: int = 720) -> None:
+    def __init__(
+        self,
+        *,
+        width: int = 1280,
+        height: int = 720,
+        pool: BrowserPool | None = None,
+        cache: ContentCache | None = None,
+    ) -> None:
         self.width = width
         self.height = height
+        self.pool = pool
+        self.cache = cache
 
     async def observe(
         self,
@@ -239,94 +319,112 @@ class BrowserObserver:
         slide_id: str | None = None,
         debug_overlay: bool = False,
     ) -> BrowserObservation:
+        source = Path(html_path).resolve()
         output = Path(output_dir)
         output.mkdir(parents=True, exist_ok=True)
+        cache_key = ContentCache.key(
+            "browser", source.read_bytes().hex(), self.width, self.height, slide_id
+        )
+        if self.cache is not None:
+            cached_ir = self.cache.get_json("browser-ir", cache_key)
+            cached_png = self.cache.get_bytes("browser-render", cache_key, ".png")
+            cached_pdf = self.cache.get_bytes("browser-render", cache_key, ".pdf")
+            if (
+                cached_ir is not None
+                and cached_png is not None
+                and cached_pdf is not None
+            ):
+                screenshot = output / "render.png"
+                pdf = output / "render.pdf"
+                screenshot.write_bytes(cached_png)
+                pdf.write_bytes(cached_pdf)
+                return BrowserObservation(
+                    ComputedSlideIR.model_validate(cached_ir), screenshot, pdf, None
+                )
         console_errors: list[str] = []
         page_errors: list[str] = []
         resource_errors: list[str] = []
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(
-                headless=True, args=["--disable-gpu", "--no-sandbox"]
+        owned_pool = self.pool is None
+        pool = self.pool or BrowserPool(max_pages=1)
+        context = await pool.context(width=self.width, height=self.height)
+        try:
+            page = await context.new_page()
+            page.on(
+                "console",
+                lambda message: (
+                    console_errors.append(message.text)
+                    if message.type == "error"
+                    else None
+                ),
             )
-            try:
-                context = await browser.new_context(
-                    viewport={"width": self.width, "height": self.height},
-                    device_scale_factor=1,
-                    locale="en-US",
-                    timezone_id="UTC",
-                    color_scheme="light",
-                    reduced_motion="reduce",
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            page.on(
+                "requestfailed",
+                lambda request: resource_errors.append(
+                    f"{request.url}: {request.failure}"
+                ),
+            )
+            await page.goto(
+                Path(html_path).resolve().as_uri(), wait_until="networkidle"
+            )
+            await page.evaluate(
+                "document.fonts ? document.fonts.ready : Promise.resolve()"
+            )
+            await page.wait_for_function(
+                "[...document.images].every(img => img.complete)"
+            )
+            paths = await page.evaluate(
+                """selector => [...document.querySelectorAll(selector)].map(el => {
+                const parts=[]; while(el && el.nodeType===Node.ELEMENT_NODE){
+                const siblings=[...el.parentElement?.children||[]].filter(x=>x.tagName===el.tagName);
+                parts.unshift(`${el.tagName.toLowerCase()}[${Math.max(1,siblings.indexOf(el)+1)}]`);
+                el=el.parentElement;} return parts.join('/'); })""",
+                _INSPECTABLE,
+            )
+            fallback_ids = [deterministic_fallback_id(path) for path in paths]
+            await page.evaluate(
+                """([selector, ids]) => [...document.querySelectorAll(selector)].forEach(
+                (el, index) => { if (!el.dataset.slidexId?.trim()) el.dataset.slidexId = ids[index]; })""",
+                [_INSPECTABLE, fallback_ids],
+            )
+            raw = await page.evaluate(_OBSERVE_SCRIPT, _INSPECTABLE)
+            validate_element_ids([item["element_id"] for item in raw])
+            screenshot = output / "render.png"
+            pdf = output / "render.pdf"
+            await page.screenshot(path=screenshot, full_page=False)
+            await page.pdf(
+                path=pdf,
+                width=f"{self.width}px",
+                height=f"{self.height}px",
+                print_background=True,
+            )
+            overlay = output / "overlay.png" if debug_overlay else None
+            if overlay:
+                await _draw_overlay(page, raw)
+                await page.screenshot(path=overlay, full_page=False)
+            ir = _build_computed_ir(
+                raw,
+                slide_id or Path(html_path).stem,
+                self.width,
+                self.height,
+                pool.version,
+                console_errors,
+                page_errors,
+                resource_errors,
+            )
+            if self.cache is not None and overlay is None:
+                self.cache.put_json("browser-ir", cache_key, ir)
+                self.cache.put_bytes(
+                    "browser-render", cache_key, ".png", screenshot.read_bytes()
                 )
-                page = await context.new_page()
-                page.on(
-                    "console",
-                    lambda message: (
-                        console_errors.append(message.text)
-                        if message.type == "error"
-                        else None
-                    ),
+                self.cache.put_bytes(
+                    "browser-render", cache_key, ".pdf", pdf.read_bytes()
                 )
-                page.on("pageerror", lambda error: page_errors.append(str(error)))
-                page.on(
-                    "requestfailed",
-                    lambda request: resource_errors.append(
-                        f"{request.url}: {request.failure}"
-                    ),
-                )
-                await page.goto(
-                    Path(html_path).resolve().as_uri(), wait_until="networkidle"
-                )
-                await page.evaluate(
-                    "document.fonts ? document.fonts.ready : Promise.resolve()"
-                )
-                await page.wait_for_function(
-                    "[...document.images].every(img => img.complete)"
-                )
-                paths = await page.evaluate(
-                    """selector => [...document.querySelectorAll(selector)].map(el => {
-                    const parts=[]; while(el && el.nodeType===Node.ELEMENT_NODE){
-                    const siblings=[...el.parentElement?.children||[]].filter(x=>x.tagName===el.tagName);
-                    parts.unshift(`${el.tagName.toLowerCase()}[${Math.max(1,siblings.indexOf(el)+1)}]`);
-                    el=el.parentElement;} return parts.join('/'); })""",
-                    _INSPECTABLE,
-                )
-                fallback_ids = [deterministic_fallback_id(path) for path in paths]
-                await page.evaluate(
-                    """([selector, ids]) => [...document.querySelectorAll(selector)].forEach(
-                    (el, index) => { if (!el.dataset.slidexId?.trim()) el.dataset.slidexId = ids[index]; })""",
-                    [_INSPECTABLE, fallback_ids],
-                )
-                raw = await page.evaluate(_OBSERVE_SCRIPT, _INSPECTABLE)
-                ids = [item["element_id"] for item in raw]
-                validate_element_ids(ids)
-                version = browser.version
-                screenshot = output / "render.png"
-                pdf = output / "render.pdf"
-                await page.screenshot(path=screenshot, full_page=False)
-                await page.pdf(
-                    path=pdf,
-                    width=f"{self.width}px",
-                    height=f"{self.height}px",
-                    print_background=True,
-                )
-                overlay = output / "overlay.png" if debug_overlay else None
-                if overlay:
-                    await _draw_overlay(page, raw)
-                    await page.screenshot(path=overlay, full_page=False)
-                ir = _build_computed_ir(
-                    raw,
-                    slide_id or Path(html_path).stem,
-                    self.width,
-                    self.height,
-                    version,
-                    console_errors,
-                    page_errors,
-                    resource_errors,
-                )
-                await context.close()
-                return BrowserObservation(ir, screenshot, pdf, overlay)
-            finally:
-                await browser.close()
+            return BrowserObservation(ir, screenshot, pdf, overlay)
+        finally:
+            await pool.release(context)
+            if owned_pool:
+                await pool.close()
 
 
 def _build_computed_ir(

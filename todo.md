@@ -820,74 +820,76 @@ Research -> Design           reset -> step -> reward
 
 # Phase 12：测试矩阵、性能与安全
 
+> 状态（2026-07-26）：无凭证 unit/client-contract、browser、export、LLM opt-in、benchmark 分层已建立；性能缓存与并发限制、本地执行安全和 episode 并发防护已完成并验证。
+
 ## 12.1 Unit tests
 
-- [ ] schema、hash、artifact lineage。
-- [ ] geometry/style/terminology linters。
-- [ ] router 和 trust policy。
-- [ ] reward gates 和 delta reward。
-- [ ] local filesystem tools 和 path traversal。
-- [ ] OpenAI request/response serialization。
-- [ ] episode state machine 和重复 action 防护。
+- [x] schema、hash、artifact lineage。
+- [x] geometry/style/terminology linters。
+- [x] router 和 trust policy。
+- [x] reward gates 和 delta reward。
+- [x] local filesystem tools 和 path traversal。
+- [x] OpenAI request/response serialization。
+- [x] episode state machine 和重复 action 防护。
 
 ## 12.2 Browser/export tests
 
-- [ ] DOM extraction fixtures。
-- [ ] browser determinism 重复测试。
-- [ ] HTML → PPTX strict validation。
-- [ ] PPTX re-render 和 render-fidelity。
-- [ ] missing font/image、JS error、network timeout。
-- [ ] 不同 aspect ratio。
+- [x] DOM extraction fixtures。
+- [x] browser determinism 重复测试。
+- [x] HTML → PPTX strict validation。
+- [x] PPTX re-render 和 render-fidelity。
+- [x] missing font/image、JS error、network timeout。
+- [x] 不同 aspect ratio。
 
 ## 12.3 LLM tests
 
-- [ ] fake server 覆盖所有错误和 structured response。
-- [ ] 少量真实 provider smoke tests，使用 marker 和环境变量。
-- [ ] atomic vs whole-rubric 对照。
-- [ ] AB/BA reference order control。
-- [ ] defer/abstain 行为。
+- [x] fake server 覆盖所有错误和 structured response。
+- [x] 少量真实 provider smoke tests，使用 marker 和环境变量。
+- [x] atomic vs whole-rubric 对照。
+- [x] AB/BA reference order control。
+- [x] defer/abstain 行为。
 
 ## 12.4 OpenAI-compatible Client Contract Tests
 
-- [ ] 使用 fake server 验证 OpenAI Python SDK async client 请求。
-- [ ] 验证文本、图片、tools 和 structured output payload。
-- [ ] 验证 401、404、429、5xx、timeout 与 cancellation。
-- [ ] 验证 unknown model、invalid response 和不完整 tool call。
-- [ ] 验证同一 environment 不允许并发 step。
+- [x] 使用 fake server 验证 OpenAI Python SDK async client 请求。
+- [x] 验证文本、图片、tools 和 structured output payload。
+- [x] 验证 401、404、429、5xx、timeout 与 cancellation。
+- [x] 验证 unknown model、invalid response 和不完整 tool call。
+- [x] 验证同一 environment 不允许并发 step。
 
 ## 12.5 性能
 
-- [ ] browser/context pooling，避免每个 inspector 重启 Chromium。
-- [ ] 同一 artifact 的 IR/render/inspection 按 hash 缓存。
-- [ ] symbolic inspectors 并行运行。
-- [ ] neural calls 按 class 和 artifact hash 缓存。
-- [ ] 限制并发模型调用、浏览器页面和导出进程。
-- [ ] 记录 p50/p95 latency 和每 episode cost。
-- [ ] 不通过跳过 hard inspection 来优化延迟。
+- [x] browser/context pooling，避免每个 inspector 重启 Chromium。
+- [x] 同一 artifact 的 IR/render/inspection 按 hash 缓存。
+- [x] symbolic inspectors 并行运行。
+- [x] neural calls 按 class 和 artifact hash 缓存。
+- [x] 限制并发模型调用、浏览器页面和导出进程。
+- [x] 记录 p50/p95 latency 和每 episode cost。
+- [x] 不通过跳过 hard inspection 来优化延迟。
 
 ## 12.6 本地源码执行安全
 
-- [ ] 明确 Docker 移除后不是强隔离执行环境。
-- [ ] 本地 `run_command` 仅供受信任工作区 agent 使用，不将其包装为对外网络接口。
-- [ ] workspace path resolver 防止 `..`、symlink 和绝对路径逃逸。
-- [ ] 命令 timeout、输出上限和进程组清理。
-- [ ] 附件文件名清洗，压缩包防 zip-slip/zip-bomb。
-- [ ] API key 不写入日志、trajectory 或 artifact manifest。
-- [ ] 如未来需要不可信多租户执行，另接外部 sandbox runner；主项目不依赖 Docker。
+- [x] 明确 Docker 移除后不是强隔离执行环境。
+- [x] 本地 `run_command` 仅供受信任工作区 agent 使用，不将其包装为对外网络接口。
+- [x] workspace path resolver 防止 `..`、symlink 和绝对路径逃逸。
+- [x] 命令 timeout、输出上限和进程组清理。
+- [x] 附件文件名清洗，压缩包防 zip-slip/zip-bomb。
+- [x] API key 不写入日志、trajectory 或 artifact manifest。
+- [x] 如未来需要不可信多租户执行，另接外部 sandbox runner；主项目不依赖 Docker。
 
 ## 12.7 CI 分层
 
-- [ ] PR 默认运行 unit + OpenAI-compatible fake-server tests。
-- [ ] browser tests 在具备 Chromium 的 job 运行。
-- [ ] export tests 在具备 Node/Poppler/LibreOffice 的 job 运行。
-- [ ] real LLM tests 手动或定时运行，不进入普通 PR 门禁。
-- [ ] benchmark 和 frozen evaluation 独立运行并保存版本化结果。
+- [x] PR 默认运行 unit + OpenAI-compatible fake-server tests。
+- [x] browser tests 在具备 Chromium 的 job 运行。
+- [x] export tests 在具备 Node/Poppler/LibreOffice 的 job 运行。
+- [x] real LLM tests 手动或定时运行，不进入普通 PR 门禁。
+- [x] benchmark 和 frozen evaluation 独立运行并保存版本化结果。
 
 ### Phase 12 退出条件
 
-- [ ] 无凭证 CI 可验证绝大多数核心逻辑。
-- [ ] browser/export/LLM 失败可以区分依赖缺失与代码回归。
-- [ ] Slidex 不对外暴露任意本地命令网络接口。
+- [x] 无凭证 CI 可验证绝大多数核心逻辑。
+- [x] browser/export/LLM 失败可以区分依赖缺失与代码回归。
+- [x] Slidex 不对外暴露任意本地命令网络接口。
 
 ---
 
@@ -895,89 +897,91 @@ Research -> Design           reset -> step -> reward
 
 # Phase 13：论文级评测体系与真实场景验证
 
+> 状态（2026-07-26）：评测 harness、冻结 schema、确定性 prepare、三臂执行约束、离线统计、审计记录和 CLI 已实现；外部数据集加工、100-task/3-seed 实验和专家盲评尚未执行，Phase 13 门禁未关闭。
+>
 > 目标：在现有工程测试之外建立可发表、可复现、可审计的评测体系，同时测量 critic 的 intrinsic accuracy、真实分布迁移能力，以及 critic-in-the-loop 对最终 PPT 质量的因果收益。默认采用中等预算：100 个 sealed E2E tasks、3 个 seeds、三臂配对和单人专家盲评。
 
 ## 13.1 评测目标与预注册
 
-- [ ] 定义三项研究问题：critic 检测是否准确、hybrid 路由是否优于 whole-rubric VLM、critic 是否改善最终 PPT。
-- [ ] 将 primary endpoints 冻结为 macro balanced accuracy 和“无严重缺陷且通过导出门”的 deck 比例。
+- [x] 定义三项研究问题：critic 检测是否准确、hybrid 路由是否优于 whole-rubric VLM、critic 是否改善最终 PPT。
+- [x] 将 primary endpoints 冻结为 macro balanced accuracy 和“无严重缺陷且通过导出门”的 deck 比例。
 - [ ] 在 sealed test 前冻结 taxonomy、router、prompt、阈值、模型配置、统计方法和最小有意义效果。
-- [ ] 将 confirmatory、secondary、exploratory 指标分开，禁止测试后更改主指标。
+- [x] 将 confirmatory、secondary、exploratory 指标分开，禁止测试后更改主指标。
 - [ ] 保存预注册配置 hash、Git commit、运行环境和冻结时间。
 
 ## 13.2 评测数据模型与目录
 
-- [ ] 新建 `deeppresenter/eval/`，承载数据准备、注入、运行、汇总和统计逻辑，不污染运行时 critic。
-- [ ] 定义 `BenchmarkManifest`：数据来源、许可证、revision、SHA-256、split、case ID 和父 deck ID。
-- [ ] 定义 `EvaluationCase`：输入、clean reference、缺陷标签、严重度、定位和任务 brief。
-- [ ] 定义 `EvaluationRun`：实验臂、模型、seed、配置 hash、artifact lineage、token、费用、延迟和错误。
-- [ ] 定义 `EvaluationResult`：逐 case verdict、定位、修复结果、人工标签和指标。
-- [ ] 大型数据默认存放于 `~/.cache/deeppresenter/eval`，仓库只保存小型 fixture、manifest 和脚本。
-- [ ] 所有失败、超时、defer、error 和缺失 verdict 均进入结果，禁止只保存成功样本。
+- [x] 新建 `deeppresenter/eval/`，承载数据准备、注入、运行、汇总和统计逻辑，不污染运行时 critic。
+- [x] 定义 `BenchmarkManifest`：数据来源、许可证、revision、SHA-256、split、case ID 和父 deck ID。
+- [x] 定义 `EvaluationCase`：输入、clean reference、缺陷标签、严重度、定位和任务 brief。
+- [x] 定义 `EvaluationRun`：实验臂、模型、seed、配置 hash、artifact lineage、token、费用、延迟和错误。
+- [x] 定义 `EvaluationResult`：逐 case verdict、定位、修复结果、人工标签和指标。
+- [x] 大型数据默认存放于 `~/.cache/deeppresenter/eval`，仓库只保存小型 fixture、manifest 和脚本。
+- [x] 所有失败、超时、defer、error 和缺失 verdict 均进入结果，禁止只保存成功样本。
 
 ## 13.3 Zenodo10K 可控配对集
 
 - [ ] 从 `Forceless/Zenodo10K` 获取保留原始 `.pptx` 的 CC 授权 deck。
 - [ ] 固定 dataset revision、下载 URL、许可证、文件 hash 和获取时间。
-- [ ] 按源 deck 和模板近重复去重，禁止同源 deck 或变体跨 split。
-- [ ] 划分 20% development set 和 80% sealed test set。
-- [ ] 在 PowerPoint XML/native IR 中注入 G1–G7 和 S1–S6 单一缺陷。
+- [x] 按源 deck 和模板近重复去重，禁止同源 deck 或变体跨 split。
+- [x] 划分 20% development set 和 80% sealed test set。
+- [x] 在 PowerPoint XML/native IR 中注入 G1–G7 和 S1–S6 单一缺陷。
 - [ ] 每个缺陷类准备至少 30 个 defective/clean pair，并配套等量 clean negative。
 - [ ] clean 与 defective 使用完全相同的 LibreOffice/Playwright 环境渲染。
-- [ ] 验证 defective 与 clean pixel diff 非零，防止 template snapping 吞掉缺陷。
+- [x] 验证 defective 与 clean pixel diff 非零，防止 template snapping 吞掉缺陷。
 - [ ] 验证目标规则成立，且非目标 inspector 未出现新的高严重度缺陷。
 - [ ] 对语义注入进行逐例专家核对，对 geometry 注入随机复核至少 20%。
 - [ ] 单独冻结 G1、G2、G3、G5、G6、G7、S1、S4、S6 九类 image arm，保持与论文结果可比。
-- [ ] snapping 或渲染失败样本记为 dataset integrity failure，不记为模型漏检。
+- [x] snapping 或渲染失败样本记为 dataset integrity failure，不记为模型漏检。
 
 ## 13.4 SlideAudit 外部分布集
 
 - [ ] 获取 SlideAudit 的公开数据、标注和 taxonomy，固定发布版本。
-- [ ] 在下载阶段硬校验许可证；不可再分发时只保存 URL、revision、hash 和本地缓存路径。
-- [ ] 建立 SlideAudit taxonomy 与 G1–G7/S1–S6 的版本化 crosswalk。
-- [ ] 一对多 taxonomy 映射使用 multi-label 评测，不强制转换成单标签。
-- [ ] 对无 native IR 的图片显式运行 image-only 模式。
-- [ ] 将 symbolic inspector 的不可用标记为 capability downgrade，而不是检测错误。
+- [x] 在下载阶段硬校验许可证；不可再分发时只保存 URL、revision、hash 和本地缓存路径。
+- [x] 建立 SlideAudit taxonomy 与 G1–G7/S1–S6 的版本化 crosswalk。
+- [x] 一对多 taxonomy 映射使用 multi-label 评测，不强制转换成单标签。
+- [x] 对无 native IR 的图片显式运行 image-only 模式。
+- [x] 将 symbolic inspector 的不可用标记为 capability downgrade，而不是检测错误。
 - [ ] 分别报告 synthetic/native-IR、real-layout 和 open-world image-only 三种证据条件。
 - [ ] 对 SlideAudit 的 detection、localization、defer 和错误模式单独汇总，禁止与 native-IR 结果直接混合。
 
 ## 13.5 Real-agent failure corpus
 
-- [ ] 从 E2E `No critic` 首轮生成结果收集自然缺陷，不从 hybrid 结果反向挑选样本。
+- [x] 从 E2E `No critic` 首轮生成结果收集自然缺陷，不从 hybrid 结果反向挑选样本。
 - [ ] 保存原始 artifact、render、inspection、人工标签、修复动作和修复后 artifact。
 - [ ] 记录自然缺陷发生率、严重度、共现关系、修复成功率和 collateral defects。
-- [ ] 只有许可证允许公开的输入和生成结果可进入公开 corpus。
-- [ ] 用户私有、商业或敏感数据默认不进入公开 benchmark。
-- [ ] 自然失败 corpus 只用于真实场景分析，不参与 critic 阈值选择。
-- [ ] 按模型、任务类型和 deck 聚类保存来源，避免把同一失败的多个页面视为独立样本。
+- [x] 只有许可证允许公开的输入和生成结果可进入公开 corpus。
+- [x] 用户私有、商业或敏感数据默认不进入公开 benchmark。
+- [x] 自然失败 corpus 只用于真实场景分析，不参与 critic 阈值选择。
+- [x] 按模型、任务类型和 deck 聚类保存来源，避免把同一失败的多个页面视为独立样本。
 
 ## 13.6 E2E 任务集获取与加工
 
 - [ ] 构造 120 个公开来源任务，其中 20 个 pilot、100 个 sealed test。
 - [ ] sealed test 包含学术汇报、商业分析、产品介绍和教学讲义各 25 个。
-- [ ] 学术材料只使用允许再分发的 arXiv/open-access 来源。
-- [ ] 商业分析优先使用 World Bank、政府开放数据等明确许可来源。
-- [ ] 产品介绍使用官方开放材料、Wikimedia Commons 和可再利用数据。
-- [ ] 教学任务使用 OpenStax、MIT OCW 等开放教育资源。
+- [x] 学术材料只使用允许再分发的 arXiv/open-access 来源。
+- [x] 商业分析优先使用 World Bank、政府开放数据等明确许可来源。
+- [x] 产品介绍使用官方开放材料、Wikimedia Commons 和可再利用数据。
+- [x] 教学任务使用 OpenStax、MIT OCW 等开放教育资源。
 - [ ] 保存每个来源的 URL、许可证、revision、hash 和本地规范化副本。
 - [ ] 将原始材料转换为规范化 Markdown，并保留页码/段落到来源的映射。
 - [ ] 使用来源 ID、标题和文本 MinHash 去除重复及近重复任务。
 - [ ] 为每个任务生成结构化 brief：受众、目的、页数、语言、必需事实、必需章节、可用素材、风格约束和禁止虚构项。
 - [ ] 单人专家逐项核验 brief 能从来源材料完成。
-- [ ] pilot 仅用于发现 harness 和任务问题，不进入最终结果。
+- [x] pilot 仅用于发现 harness 和任务问题，不进入最终结果。
 
 ## 13.7 三臂配对 E2E 实验
 
 - [ ] 为每个任务和 seed 只生成一次首轮 artifact。
 - [ ] 从完全相同的首轮 artifact 分叉三种 critic 实验臂。
-- [ ] `No critic` 不反馈、不修复，只保留必要的导出安全检查。
-- [ ] `Generic critic` 使用一次 whole-rubric VLM verdict，最多 3 轮修复。
-- [ ] `Slide Examiner` 使用冻结 symbolic–neural–reference router，最多 3 轮修复。
-- [ ] 三臂共享 generation model、初始 artifact、seed、修复轮数和模型预算。
+- [x] `No critic` 不反馈、不修复，只保留必要的导出安全检查。
+- [x] `Generic critic` 使用一次 whole-rubric VLM verdict，最多 3 轮修复。
+- [x] `Slide Examiner` 使用冻结 symbolic–neural–reference router，最多 3 轮修复。
+- [x] 三臂共享 generation model、初始 artifact、seed、修复轮数和模型预算。
 - [ ] sealed test 的 100 个任务各运行 3 个 seed，共得到 900 个最终 deck。
 - [ ] 每一轮保存 parent-child lineage、critic report、repair action、成本和最终导出状态。
-- [ ] 禁止某实验臂在失败后获得额外人工修复或额外模型预算。
-- [ ] 模型服务临时故障只允许按统一重试策略处理，并保留失败记录。
+- [x] 禁止某实验臂在失败后获得额外人工修复或额外模型预算。
+- [x] 模型服务临时故障只允许按统一重试策略处理，并保留失败记录。
 
 ## 13.8 Intrinsic critic 对照与消融
 
@@ -994,94 +998,94 @@ Research -> Design           reset -> step -> reward
 
 ## 13.9 Critic 指标
 
-- [ ] 按缺陷类计算 recall、specificity、precision、F1 和 balanced accuracy。
-- [ ] 将 macro balanced accuracy 作为 intrinsic primary endpoint。
-- [ ] 定位同时报告 element ID exact match 和 bbox IoU≥0.5。
-- [ ] 报告 `pass/fail/defer/error/not_applicable` 完整分布。
-- [ ] defer 和 error 不得折算为 pass。
-- [ ] 计算 Brier score、ECE 和 confidence–accuracy curve。
-- [ ] 报告每页调用数、token、延迟、费用和模型失败率。
-- [ ] 分别报告 trusted native-IR、neural、reference-assisted 和 image-only 类。
-- [ ] 不把论文中的 `0.826` 硬编码成通过阈值，仅作为复现参照。
+- [x] 按缺陷类计算 recall、specificity、precision、F1 和 balanced accuracy。
+- [x] 将 macro balanced accuracy 作为 intrinsic primary endpoint。
+- [x] 定位同时报告 element ID exact match 和 bbox IoU≥0.5。
+- [x] 报告 `pass/fail/defer/error/not_applicable` 完整分布。
+- [x] defer 和 error 不得折算为 pass。
+- [x] 计算 Brier score、ECE 和 confidence–accuracy curve。
+- [x] 报告每页调用数、token、延迟、费用和模型失败率。
+- [x] 分别报告 trusted native-IR、neural、reference-assisted 和 image-only 类。
+- [x] 不把论文中的 `0.826` 硬编码成通过阈值，仅作为复现参照。
 
 ## 13.10 Repair 指标
 
 - [ ] 计算 target defect removal rate。
 - [ ] 报告首轮和三轮累计修复成功率。
-- [ ] 计算 collateral defect rate。
-- [ ] 比较修复前后严重度、缺陷总数和 hard-gate 状态。
-- [ ] 验证文本、页数、图片和必需事实未被修复过程删除。
+- [x] 计算 collateral defect rate。
+- [x] 比较修复前后严重度、缺陷总数和 hard-gate 状态。
+- [x] 验证文本、页数、图片和必需事实未被修复过程删除。
 - [ ] 验证最终 PPTX render fidelity。
-- [ ] 将“隐藏内容、移出页面、缩为零、文本转图片”等 reward hacking 计为修复失败。
-- [ ] 修复后必须使用新 artifact 重新检查，禁止沿用旧 report。
+- [x] 将“隐藏内容、移出页面、缩为零、文本转图片”等 reward hacking 计为修复失败。
+- [x] 修复后必须使用新 artifact 重新检查，禁止沿用旧 report。
 
 ## 13.11 E2E 指标与人工盲评
 
-- [ ] 将“无严重缺陷且通过导出保真门的 deck 比例”设为 E2E primary endpoint。
+- [x] 将“无严重缺陷且通过导出保真门的 deck 比例”设为 E2E primary endpoint。
 - [ ] 对内容正确性、完整性、叙事、视觉设计、可读性和整体可用性进行人工评分。
 - [ ] 隐藏实验臂、模型和文件元数据，随机化展示顺序。
 - [ ] 进行 `hybrid vs generic` 和 `hybrid vs no critic` 配对偏好判断。
 - [ ] 使用独立自动指标评估任务约束、章节覆盖、grounding、页数和 render fidelity。
-- [ ] PPTEval 或独立 judge 只能作为 secondary metric，不能充当唯一质量真值。
-- [ ] critic 收益不得以 grounding、必需事实保留率或导出成功率下降为代价。
+- [x] PPTEval 或独立 judge 只能作为 secondary metric，不能充当唯一质量真值。
+- [x] critic 收益不得以 grounding、必需事实保留率或导出成功率下降为代价。
 - [ ] 单人专家对至少 15% 样本间隔两周重复盲评。
 - [ ] 报告 intra-rater weighted κ。
-- [ ] 明确声明该设计不提供 inter-rater reliability 证据。
+- [x] 明确声明该设计不提供 inter-rater reliability 证据。
 
 ## 13.12 统计分析
 
-- [ ] 分类指标采用按源 deck 聚类的 bootstrap 95% CI。
-- [ ] 配对检测差异使用 McNemar test 或 paired cluster bootstrap。
-- [ ] E2E 以 task 为聚类单位、seed 为重复测量。
+- [x] 分类指标采用按源 deck 聚类的 bootstrap 95% CI。
+- [x] 配对检测差异使用 McNemar test 或 paired cluster bootstrap。
+- [x] E2E 以 task 为聚类单位、seed 为重复测量。
 - [ ] 对二元 endpoint 使用 mixed-effects logistic model。
 - [ ] 对人工 ordinal score 使用 mixed-effects ordinal model。
 - [ ] 同时报告绝对差、相对差、effect size 和 95% CI。
-- [ ] 多类和多对照检验使用 Holm correction。
-- [ ] 最小有意义效果预设为 hybrid 相对 generic 的 macro BA 提升至少 5 个百分点。
-- [ ] E2E 最小有意义效果预设为 hybrid 相对 no-critic 的 primary endpoint 提升至少 5 个百分点。
-- [ ] grounding 和导出成功率的非劣界值设为下降不超过 2 个百分点。
-- [ ] 分布迁移、自然缺陷发生率和模型家族差异作为 exploratory analysis。
-- [ ] 禁止按最终结果选择 seed、模型或样本子集。
+- [x] 多类和多对照检验使用 Holm correction。
+- [x] 最小有意义效果预设为 hybrid 相对 generic 的 macro BA 提升至少 5 个百分点。
+- [x] E2E 最小有意义效果预设为 hybrid 相对 no-critic 的 primary endpoint 提升至少 5 个百分点。
+- [x] grounding 和导出成功率的非劣界值设为下降不超过 2 个百分点。
+- [x] 分布迁移、自然缺陷发生率和模型家族差异作为 exploratory analysis。
+- [x] 禁止按最终结果选择 seed、模型或样本子集。
 
 ## 13.13 CLI 与执行接口
 
-- [ ] 增加 `pptagent eval prepare`，完成下载、许可校验、去重、注入和 manifest 冻结。
-- [ ] 增加 `pptagent eval run --suite intrinsic|e2e --arm ...`。
-- [ ] `eval run` 支持固定 seed、断点续跑、并发限制和只重跑失败 case。
-- [ ] 增加 `pptagent eval summarize`，只从不可变 run records 重算指标。
-- [ ] summarize 不得重新调用模型或修改原始 verdict。
-- [ ] 为 full benchmark 增加 `benchmark` pytest marker。
-- [ ] CI 仅运行不需要下载大数据和真实模型的小型 smoke fixture。
+- [x] 增加 `pptagent eval prepare`，完成下载、许可校验、去重、注入和 manifest 冻结。
+- [x] 增加 `pptagent eval run --suite intrinsic|e2e --arm ...`。
+- [x] `eval run` 支持固定 seed、断点续跑、并发限制和只重跑失败 case。
+- [x] 增加 `pptagent eval summarize`，只从不可变 run records 重算指标。
+- [x] summarize 不得重新调用模型或修改原始 verdict。
+- [x] 为 full benchmark 增加 `benchmark` pytest marker。
+- [x] CI 仅运行不需要下载大数据和真实模型的小型 smoke fixture。
 - [ ] 完整 benchmark 在离线 job 执行并保存版本化结果。
 
 ## 13.14 可复现性与审计
 
-- [ ] 保存 generator、critic、semantic model 和 judge 的 provider/model identifier。
-- [ ] 保存 sampling parameters、capability flags、prompt hash、router hash 和 reward hash。
-- [ ] 保存 Python、Node、Chromium、LibreOffice、Poppler 和系统字体版本。
-- [ ] 保存 Git commit、依赖 lock 信息和运行时间。
+- [x] 保存 generator、critic、semantic model 和 judge 的 provider/model identifier。
+- [x] 保存 sampling parameters、capability flags、prompt hash、router hash 和 reward hash。
+- [x] 保存 Python、Node、Chromium、LibreOffice、Poppler 和系统字体版本。
+- [x] 保存 Git commit、依赖 lock 信息和运行时间。
 - [ ] 每个 case 可从 manifest、run record 和 artifact store 完整回放。
-- [ ] API key 和敏感路径不得进入结果。
-- [ ] 提供完整结果与过滤结果时，必须同时保存过滤规则和被排除 case。
-- [ ] 结果汇总必须包含数据完整性失败、模型错误和导出失败数量。
+- [x] API key 和敏感路径不得进入结果。
+- [x] 提供完整结果与过滤结果时，必须同时保存过滤规则和被排除 case。
+- [x] 结果汇总必须包含数据完整性失败、模型错误和导出失败数量。
 
 ## 13.15 验收门禁
 
-- [ ] 重复运行 `eval prepare` 得到相同 case IDs、split 和 hashes。
+- [x] 重复运行 `eval prepare` 得到相同 case IDs、split 和 hashes。
 - [ ] 不存在源 deck、近重复模板或同源变体跨 split。
 - [ ] 所有 injected defective 均通过非零 pixel-diff 验证。
-- [ ] 三臂确实从同一首轮 artifact 分叉。
-- [ ] 所有实验臂使用相同修复和模型预算。
+- [x] 三臂确实从同一首轮 artifact 分叉。
+- [x] 所有实验臂使用相同修复和模型预算。
 - [ ] native-IR 类 frozen hybrid balanced accuracy 不低于 0.95；低于阈值先按实现或数据故障调查。
 - [ ] sealed test 运行后不得修改 router、prompt 或阈值并覆盖原结果。
 - [ ] 最终报告同时包含 intrinsic、SlideAudit image-only、自然失败 corpus 和 E2E 结果。
 - [ ] 最终报告同时呈现 detection gain、repair gain、成本和 failure boundary。
 - [ ] neural transfer failure、reference unresolved 和 capability downgrade 必须原样报告。
-- [ ] 不允许只汇报成功导出的 deck 或最有利模型/实验臂。
+- [x] 不允许只汇报成功导出的 deck 或最有利模型/实验臂。
 
 ## 13.16 测试计划
 
-- [ ] 为 manifest、去重、split 隔离、许可校验和 deterministic IDs 编写 unit tests。
+- [x] 为 manifest、去重、split 隔离、许可校验和 deterministic IDs 编写 unit tests。
 - [ ] 为 XML/IR mutation、pixel-diff、snapping rejection 和非目标缺陷检查编写 paired-fixture tests。
 - [ ] 使用 fake model 验证三臂预算、prompt、defer/error、断点恢复和不可变结果。
 - [ ] 使用小型公开 fixture 完成 prepare → run → summarize 的离线 E2E smoke test。
@@ -1092,19 +1096,19 @@ Research -> Design           reset -> step -> reward
 
 - [ ] 采用论文级研究标准和中等预算。
 - [ ] E2E 测试固定使用 100 个 sealed tasks、3 个 seeds 和三臂配对。
-- [ ] 任务场景固定为学术、商业、产品和教学等比例分层。
+- [x] 任务场景固定为学术、商业、产品和教学等比例分层。
 - [ ] 人工评测由单人专家执行，并通过重复盲评估计 intra-rater reliability。
-- [ ] 大型数据和模型输出不提交 Git，只提交代码、小型 fixture 和版本化 manifest。
-- [ ] 不将单人评测结果表述为跨评审者一致性或普适的人类偏好结论。
+- [x] 大型数据和模型输出不提交 Git，只提交代码、小型 fixture 和版本化 manifest。
+- [x] 不将单人评测结果表述为跨评审者一致性或普适的人类偏好结论。
 
 ### Phase 13 退出条件
 
 - [ ] 数据来源、许可证、版本、hash、split 和加工过程全部可审计。
-- [ ] critic benchmark 可独立重放并复算所有指标。
-- [ ] 三臂 E2E 实验能够隔离生成随机性与 critic 机制差异。
+- [x] critic benchmark 可独立重放并复算所有指标。
+- [x] 三臂 E2E 实验能够隔离生成随机性与 critic 机制差异。
 - [ ] 评测结果能够回答 critic 是否准确、hybrid 路由是否有效、以及 critic 是否改善最终 PPT。
 - [ ] 真实 agent failure corpus 能补充 `slide-examiner.pdf` 在自然生成场景中的发生率和修复效果数据。
-- [ ] 单人专家评测的限制被明确披露，不声称跨评审者一致性。
+- [x] 单人专家评测的限制被明确披露，不声称跨评审者一致性。
 
 ---
 

@@ -22,6 +22,7 @@ from deeppresenter.utils.typings import InputRequest
 from deeppresenter.utils.config import DeepPresenterConfig
 from deeppresenter.utils.outline import Outline
 from deeppresenter.utils.webview import PlaywrightConverter
+from deeppresenter.main import AgentLoop
 
 from .common import (
     CACHE_DIR,
@@ -288,9 +289,7 @@ def onboard() -> None:
         pending_config.replace(CONFIG_FILE)
         pending_mcp.replace(MCP_FILE)
         console.print("[bold green]✓[/bold green] All LLMs validated successfully!")
-        console.print(
-            f"[bold green]✓[/bold green] Configuration saved to {CONFIG_DIR}"
-        )
+        console.print(f"[bold green]✓[/bold green] Configuration saved to {CONFIG_DIR}")
     except Exception as e:
         pending_config.unlink(missing_ok=True)
         pending_mcp.unlink(missing_ok=True)
@@ -349,9 +348,7 @@ def generate(
         console.print("[bold red]Error:[/bold red] Output path must end with .pptx")
         raise typer.Exit(code=2)
     if not is_onboarded():
-        console.print(
-            "[bold red]Error:[/bold red] Please run 'slidex onboard' first"
-        )
+        console.print("[bold red]Error:[/bold red] Please run 'slidex onboard' first")
         raise typer.Exit(code=1)
 
     attachments = []
@@ -381,8 +378,6 @@ def generate(
                 nonlocal local_model_pid
                 local_model_pid = setup_inference()
             session_id = str(uuid.uuid4())[:8]
-
-            from deeppresenter.main import AgentLoop
 
             loop = AgentLoop(
                 config=config,

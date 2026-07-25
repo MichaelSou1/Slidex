@@ -124,15 +124,13 @@ def test_overlap_clean_and_defective_pair() -> None:
 
 @pytest.mark.unit
 def test_overlap_ignores_all_ancestor_descendant_pairs() -> None:
-    grandchild = _element(
-        "text", 50, 50, 40, 20, parent_id="inner"
-    )
-    inner = _element(
-        "inner", 40, 40, 80, 60, parent_id="card", children=[grandchild]
-    )
+    grandchild = _element("text", 50, 50, 40, 20, parent_id="inner")
+    inner = _element("inner", 40, 40, 80, 60, parent_id="card", children=[grandchild])
     card = _element("card", 30, 30, 120, 100, children=[inner])
 
-    assert OverlapInspector().inspect(_artifact([card]))[0].status == InspectionStatus.PASS
+    assert (
+        OverlapInspector().inspect(_artifact([card]))[0].status == InspectionStatus.PASS
+    )
 
 
 @pytest.mark.unit
@@ -275,3 +273,77 @@ async def test_single_browser_load_outputs_ir_png_pdf_and_overlay(
         and observation.pdf_path.exists()
         and observation.overlay_path.exists()
     )
+
+
+@pytest.mark.browser
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(1024, 768), (1280, 720)])
+async def test_browser_observation_is_deterministic_for_aspect_ratios(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    from deeppresenter.slidex.browser import BrowserPool
+
+    width, height = size
+    html = tmp_path / f"slide-{width}.html"
+    html.write_text(
+        f"<html><style>html,body{{margin:0;width:{width}px;height:{height}px}}</style>"
+        "<body><h1 data-slidex-id='title'>Stable</h1></body></html>",
+        encoding="utf-8",
+    )
+    async with BrowserPool(max_pages=2) as pool:
+        observer = BrowserObserver(width=width, height=height, pool=pool)
+        first = await observer.observe(html, tmp_path / f"first-{width}")
+        second = await observer.observe(html, tmp_path / f"second-{width}")
+    assert first.computed_ir.model_dump(
+        exclude={"browser_version"}
+    ) == second.computed_ir.model_dump(exclude={"browser_version"})
+    assert first.screenshot_path.read_bytes() == second.screenshot_path.read_bytes()
+    assert first.computed_ir.page_width == width
+    assert first.computed_ir.page_height == height
+
+
+@pytest.mark.browser
+@pytest.mark.asyncio
+async def test_browser_records_javascript_and_missing_resource_errors(
+    tmp_path: Path,
+) -> None:
+    html = tmp_path / "errors.html"
+    html.write_text(
+        "<html><body><img data-slidex-id='missing' src='missing.png'>"
+        "<script>console.error('console-failure'); throw new Error('page-failure')</script>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    observation = await BrowserObserver().observe(html, tmp_path / "errors")
+    assert any(
+        "console-failure" in item for item in observation.computed_ir.console_errors
+    )
+    assert any("page-failure" in item for item in observation.computed_ir.page_errors)
+    assert observation.computed_ir.resource_errors
+    image = observation.computed_ir.elements[0]
+    assert image.image["loaded"] is False
+
+
+@pytest.mark.browser
+@pytest.mark.asyncio
+async def test_browser_observation_content_cache_avoids_second_page_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deeppresenter.slidex.browser import BrowserPool
+    from deeppresenter.slidex.cache import ContentCache
+
+    html = tmp_path / "cached.html"
+    html.write_text("<html><body><h1 data-slidex-id='title'>Cached</h1></body></html>")
+    cache = ContentCache(tmp_path / "cache")
+    first = await BrowserObserver(cache=cache).observe(html, tmp_path / "first")
+
+    async def forbidden_context(*args, **kwargs):
+        raise AssertionError("cache miss unexpectedly launched browser")
+
+    pool = BrowserPool()
+    monkeypatch.setattr(pool, "context", forbidden_context)
+    second = await BrowserObserver(pool=pool, cache=cache).observe(
+        html, tmp_path / "second"
+    )
+    assert first.computed_ir == second.computed_ir
+    assert first.screenshot_path.read_bytes() == second.screenshot_path.read_bytes()

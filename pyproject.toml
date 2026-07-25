@@ -150,6 +150,7 @@ markers = [
     "llm: tests requiring model credentials",
     "api: HTTP API contract tests",
     "rl: agentic RL environment tests",
+    "benchmark: full frozen evaluation requiring large datasets or real models",
     "parse: tests requiring MinerU API",
     "asyncio: asynchronous tests",
 ]

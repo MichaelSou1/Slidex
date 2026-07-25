@@ -12,7 +12,7 @@ import uuid
 import zipfile
 from collections import Counter
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 from xml.etree import ElementTree
 
 from PIL import Image, ImageChops, ImageStat
@@ -290,11 +290,25 @@ class FinalExportService:
         self,
         renderer: LibreOfficeRenderer | None = None,
         validator: RenderFidelityValidator | None = None,
+        max_concurrent_exports: int = 2,
     ) -> None:
+        if max_concurrent_exports < 1:
+            raise ValueError("max_concurrent_exports must be positive")
         self.renderer = renderer or LibreOfficeRenderer()
         self.validator = validator or RenderFidelityValidator()
+        self._semaphore = asyncio.Semaphore(max_concurrent_exports)
 
     async def export(
+        self,
+        html_inputs: Path | Sequence[Path],
+        output_pptx: Path,
+        html_renders: Sequence[Path],
+        **kwargs: Any,
+    ) -> ExportManifest:
+        async with self._semaphore:
+            return await self._export(html_inputs, output_pptx, html_renders, **kwargs)
+
+    async def _export(
         self,
         html_inputs: Path | Sequence[Path],
         output_pptx: Path,
@@ -442,18 +456,24 @@ class FinalExportService:
                 pptx_path, page_count
             )
             reasons: list[str] = []
-            expected = expected_page_count if expected_page_count is not None else page_count
+            expected = (
+                expected_page_count if expected_page_count is not None else page_count
+            )
             if len(pages) != page_count:
                 reasons.append(f"render_page_count_mismatch:{page_count}!={len(pages)}")
             if expected_page_count is not None and page_count != expected_page_count:
-                reasons.append(f"expected_page_count_mismatch:{expected_page_count}!={page_count}")
+                reasons.append(
+                    f"expected_page_count_mismatch:{expected_page_count}!={page_count}"
+                )
             page_results: list[FidelityPageResult] = []
             renderer = self.renderer.info()
             for index, page in enumerate(pages):
                 with Image.open(page) as image:
                     size = image.size
                 findings = final_render_findings(page)
-                asset_failures = missing_images[index] if index < len(missing_images) else 0
+                asset_failures = (
+                    missing_images[index] if index < len(missing_images) else 0
+                )
                 passed = asset_failures == 0 and not findings
                 slide_id = f"slide_{index + 1:02d}"
                 if not passed:
@@ -538,7 +558,7 @@ def compare_images(
 def _difference_hash_distance(left: Image.Image, right: Image.Image) -> float:
     def digest(image: Image.Image) -> list[bool]:
         small = image.convert("L").resize((9, 8), Image.Resampling.LANCZOS)
-        pixels = list(small.get_flattened_data())
+        pixels = list(small.getdata())
         return [
             pixels[row * 9 + col] > pixels[row * 9 + col + 1]
             for row in range(8)

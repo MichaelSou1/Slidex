@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import unicodedata
 import uuid
 from datetime import datetime
 from enum import StrEnum
@@ -17,6 +18,19 @@ from pydantic import BaseModel, Field
 
 from deeppresenter.utils.constants import GLOBAL_ENV_LIST
 from deeppresenter.utils.log import debug, warning
+
+
+def sanitize_attachment_name(name: str) -> str:
+    """Return a portable basename and reject traversal or ambiguous names."""
+    normalized = unicodedata.normalize("NFKC", name).strip()
+    if not normalized or normalized in {".", ".."}:
+        raise ValueError("attachment filename is empty or reserved")
+    if Path(normalized).name != normalized or "/" in normalized or "\\" in normalized:
+        raise ValueError(f"unsafe attachment filename: {name}")
+    cleaned = re.sub(r"[^\w.() -]", "_", normalized, flags=re.UNICODE)
+    if not cleaned or cleaned.startswith("."):
+        raise ValueError(f"unsafe attachment filename: {name}")
+    return cleaned[:255]
 
 
 class MCPServer(BaseModel):
@@ -208,7 +222,8 @@ class InputRequest(BaseModel):
                 new_attachments.append(src_path)
                 continue
 
-            dst_path = workspace / "attachments" / src_path.name
+            safe_name = sanitize_attachment_name(src_path.name)
+            dst_path = workspace / "attachments" / safe_name
             if dst_path.exists():
                 warning(f"Attachment {att} already exists in workspace")
                 new_attachments.append(dst_path)

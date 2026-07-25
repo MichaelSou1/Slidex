@@ -2,17 +2,22 @@
 
 import fnmatch
 import json
+import os
+import signal
 import shutil
 import subprocess
 from pathlib import Path
 
 
 class WorkspaceTools:
-    """Expose predictable local tools constrained to one workspace."""
+    """Tools for a trusted local agent, not an isolation or multi-tenant boundary."""
 
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, *, max_output_bytes: int = 1_000_000):
         self.workspace = workspace.resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
+        if max_output_bytes < 1:
+            raise ValueError("max_output_bytes must be positive")
+        self.max_output_bytes = max_output_bytes
 
     def _resolve(self, path: str = ".") -> Path:
         candidate = Path(path).expanduser()
@@ -25,16 +30,14 @@ class WorkspaceTools:
             raise ValueError(f"Path escapes workspace: {path}")
         return resolved
 
-    def read_file(
-        self, path: str, offset: int = 0, limit: int | None = None
-    ) -> str:
+    def read_file(self, path: str, offset: int = 0, limit: int | None = None) -> str:
         """Read UTF-8 text, optionally selecting a zero-based line range."""
         if offset < 0:
             raise ValueError("offset must be non-negative")
         if limit is not None and limit <= 0:
             raise ValueError("limit must be positive")
-        lines = self._resolve(path).read_text(encoding="utf-8").splitlines(
-            keepends=True
+        lines = (
+            self._resolve(path).read_text(encoding="utf-8").splitlines(keepends=True)
         )
         selected = lines[offset:] if limit is None else lines[offset : offset + limit]
         return "".join(selected)
@@ -133,26 +136,38 @@ class WorkspaceTools:
             raise NotADirectoryError(cwd)
         if timeout <= 0:
             raise ValueError("timeout must be positive")
-        try:
-            result = subprocess.run(
-                command,
-                cwd=working_directory,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise TimeoutError(f"Command timed out after {timeout} seconds") from exc
-        return json.dumps(
-            {
-                "exit_code": result.returncode,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-            },
-            ensure_ascii=False,
+        process = subprocess.Popen(
+            command,
+            cwd=working_directory,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+            raise TimeoutError(f"Command timed out after {timeout} seconds") from exc
+        stdout_text, stdout_truncated = self._bounded_output(stdout)
+        stderr_text, stderr_truncated = self._bounded_output(stderr)
+        payload: dict[str, object] = {
+            "exit_code": process.returncode,
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+        }
+        if stdout_truncated or stderr_truncated:
+            payload.update(
+                stdout_truncated=stdout_truncated,
+                stderr_truncated=stderr_truncated,
+            )
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _bounded_output(self, value: bytes) -> tuple[str, bool]:
+        truncated = len(value) > self.max_output_bytes
+        selected = value[: self.max_output_bytes]
+        return selected.decode(errors="replace"), truncated
 
     def register(self, agent_env: object) -> None:
         """Register all workspace tools on an AgentEnv-like registry."""

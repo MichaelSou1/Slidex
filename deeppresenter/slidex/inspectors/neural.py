@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -39,7 +40,14 @@ class NeuralCapabilityError(RuntimeError):
 class AtomicNeuralClient:
     """Issue independent structured requests and retain replay metadata."""
 
-    def __init__(self, model: LLM, *, require_multimodal: bool = False) -> None:
+    def __init__(
+        self,
+        model: LLM,
+        *,
+        require_multimodal: bool = False,
+        max_concurrent: int = 4,
+        cache_results: bool = False,
+    ) -> None:
         if require_multimodal and model.is_multimodal is not True:
             raise NeuralCapabilityError("critic model does not declare image support")
         if hasattr(model, "require_capabilities"):
@@ -49,8 +57,13 @@ class AtomicNeuralClient:
                     model.require_capabilities("vision")
             except Exception as exc:
                 raise NeuralCapabilityError(str(exc)) from exc
+        if max_concurrent < 1:
+            raise ValueError("max_concurrent must be positive")
         self.model = model
         self.records: list[NeuralCallRecord] = []
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._cache_results = cache_results
+        self._cache: dict[str, tuple[AtomicVerdict, NeuralCallRecord]] = {}
 
     async def inspect(
         self,
@@ -62,18 +75,34 @@ class AtomicNeuralClient:
         condition: str | None = None,
     ) -> tuple[AtomicVerdict, NeuralCallRecord]:
         prompt = self._atomic_prompt(defect_class, definition, evidence)
+        image_hashes = [
+            hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in image_paths
+        ]
+        cache_key = hashlib.sha256(
+            json.dumps(
+                [defect_class.value, prompt, image_hashes, condition],
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        cached = self._cache.get(cache_key) if self._cache_results else None
+        if cached is not None:
+            return cached
         content = self._content(prompt, image_paths)
-        started = time.perf_counter()
-        response = await self.model.run(
-            [{"role": "user", "content": content}],
-            response_format=AtomicVerdict,
-            retry_times=1,
-        )
+        async with self._semaphore:
+            started = time.perf_counter()
+            response = await self.model.run(
+                [{"role": "user", "content": content}],
+                response_format=AtomicVerdict,
+                retry_times=1,
+            )
         latency = (time.perf_counter() - started) * 1000
         raw = response.choices[0].message.content or ""
         verdict = AtomicVerdict.model_validate_json(raw)
         record = self._record(defect_class, prompt, response, raw, latency, condition)
         self.records.append(record)
+        if self._cache_results:
+            self._cache[cache_key] = (verdict, record)
         return verdict, record
 
     async def compare(
@@ -92,17 +121,18 @@ class AtomicNeuralClient:
             "Use tie when observably equivalent and defer when evidence is insufficient. "
             "Do not assess general visual quality. " + _JSON_INSTRUCTION
         )
-        started = time.perf_counter()
-        response = await self.model.run(
-            [
-                {
-                    "role": "user",
-                    "content": self._content(prompt, [left_path, right_path]),
-                }
-            ],
-            response_format=PairwiseVerdict,
-            retry_times=1,
-        )
+        async with self._semaphore:
+            started = time.perf_counter()
+            response = await self.model.run(
+                [
+                    {
+                        "role": "user",
+                        "content": self._content(prompt, [left_path, right_path]),
+                    }
+                ],
+                response_format=PairwiseVerdict,
+                retry_times=1,
+            )
         latency = (time.perf_counter() - started) * 1000
         raw = response.choices[0].message.content or ""
         verdict = PairwiseVerdict.model_validate_json(raw)

@@ -1,0 +1,52 @@
+name: Extended Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_llm:
+        description: Run credentialed LLM smoke tests
+        type: boolean
+        default: false
+      run_benchmark:
+        description: Run frozen benchmark job
+        type: boolean
+        default: false
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  llm:
+    if: inputs.run_llm == true || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SLIDEX_RUN_LLM_TESTS: "1"
+      SLIDER_LLM_BASE_URL: ${{ secrets.SLIDER_LLM_BASE_URL }}
+      SLIDER_JUDGE_LLM_MODEL: ${{ secrets.SLIDER_JUDGE_LLM_MODEL }}
+      SLIDER_LLM_API_KEY: ${{ secrets.SLIDER_LLM_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run pytest -q -m llm
+
+  benchmark:
+    if: inputs.run_benchmark == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - name: Run frozen benchmark
+        run: uv run pytest -q -m benchmark
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frozen-evaluation-results-${{ github.run_id }}
+          path: ~/.cache/deeppresenter/eval/runs
+          if-no-files-found: warn
+          retention-days: 90

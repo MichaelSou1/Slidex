@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from collections.abc import Iterable
 from typing import Any
 
 from deeppresenter.slidex.artifacts import ArtifactStore
+from deeppresenter.slidex.cache import ContentCache
 from deeppresenter.slidex.inspectors import (
     AlignmentInspector,
     AtomicNeuralClient,
@@ -87,6 +89,7 @@ class HybridCritic:
         critic_model: LLM | None = None,
         semantic_model: LLM | None = None,
         router: FrozenCriticRouter | None = None,
+        cache: ContentCache | None = None,
     ) -> None:
         self.config = config
         router_config = FrozenRouterConfig(
@@ -95,19 +98,33 @@ class HybridCritic:
             reference_policy=config.reference_policy,
         )
         self.router = router or FrozenCriticRouter(router_config)
+        self.cache = cache
         self.critic_client = (
-            AtomicNeuralClient(critic_model, require_multimodal=True)
+            AtomicNeuralClient(
+                critic_model, require_multimodal=True, cache_results=True
+            )
             if critic_model and critic_model.is_multimodal is True
             else None
         )
         self.semantic_client = (
-            AtomicNeuralClient(semantic_model or critic_model)
+            AtomicNeuralClient(semantic_model or critic_model, cache_results=True)
             if (semantic_model or critic_model)
             else None
         )
 
     async def inspect(self, context: InspectionContext) -> InspectionReport:
         """Inspect every taxonomy class and retain conflicts and capability limits."""
+        cache_key = ContentCache.key(
+            "hybrid-inspection",
+            context,
+            self.router.config.config_hash,
+            bool(self.critic_client),
+            bool(self.semantic_client),
+        )
+        if self.cache is not None:
+            cached = self.cache.get_json("inspection", cache_key)
+            if cached is not None:
+                return InspectionReport.model_validate(cached)
         decisions = [
             self.router.route(
                 defect_class,
@@ -116,15 +133,16 @@ class HybridCritic:
             )
             for defect_class in DefectClass
         ]
-        results: list[InspectionResult] = []
-        for decision in decisions:
-            results.extend(await self._execute(decision, context))
+        grouped_results = await asyncio.gather(
+            *(self._execute(decision, context) for decision in decisions)
+        )
+        results = [result for group in grouped_results for result in group]
         conflicts = _conflicts(results, context.artifact.trust)
         resolved_status = _resolve_status(results, context.artifact.trust)
         limits = sorted(
             {item.capability_limit for item in decisions if item.capability_limit}
         )
-        return _report(
+        report = _report(
             context.artifact,
             results,
             router_version=self.router.config.router_version,
@@ -144,6 +162,9 @@ class HybridCritic:
             resolved_status=resolved_status,
             capability_limits=limits,
         )
+        if self.cache is not None:
+            self.cache.put_json("inspection", cache_key, report)
+        return report
 
     async def _execute(
         self, decision: RouteDecision, context: InspectionContext
@@ -177,7 +198,9 @@ class HybridCritic:
                     await self._inspect_async(inspector, context, decision.defect_class)
                 ]
             else:
-                current = inspect_safely(inspector, context.artifact)
+                current = await asyncio.to_thread(
+                    inspect_safely, inspector, context.artifact
+                )
             collected.extend(current)
             may_continue = stage.on_defer == "next" and all(
                 item.status in {InspectionStatus.DEFER, InspectionStatus.PASS}

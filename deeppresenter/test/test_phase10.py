@@ -268,3 +268,35 @@ async def test_incomplete_tool_call_is_rejected() -> None:
         ]
         with pytest.raises(ValueError):
             await model(server).run("act", tools=tools, retry_times=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancellation_propagates_without_hidden_retry() -> None:
+    with FakeServer() as server:
+        server.reply({"role": "assistant", "content": "late"})
+        status, body, content_type, _ = server.responses.pop()
+        server.responses.append((status, body, content_type, 1.0))
+        task = __import__("asyncio").create_task(
+            model(server).run("cancel", retry_times=1)
+        )
+        for _ in range(100):
+            if server.requests:
+                break
+            await __import__("asyncio").sleep(0.01)
+        task.cancel()
+        with pytest.raises(__import__("asyncio").CancelledError):
+            await task
+        assert len(server.requests) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unknown_model_response_is_explicit() -> None:
+    with FakeServer() as server:
+        body = json.dumps(
+            {"error": {"message": "unknown model", "type": "invalid_request_error"}}
+        ).encode()
+        server.responses.append((400, body, "application/json", 0))
+        with pytest.raises(ValueError, match="400|unknown model"):
+            await model(server).run("hi", retry_times=1)
