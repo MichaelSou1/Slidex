@@ -18,7 +18,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from deeppresenter.main import AgentLoop, InputRequest
+from deeppresenter.utils.typings import InputRequest
 from deeppresenter.utils.config import DeepPresenterConfig
 from deeppresenter.utils.outline import Outline
 from deeppresenter.utils.webview import PlaywrightConverter
@@ -28,9 +28,13 @@ from .common import (
     CONFIG_DIR,
     CONFIG_FILE,
     MCP_FILE,
+    LEGACY_CACHE_DIR,
+    LEGACY_CONFIG_DIR,
     PACKAGE_DIR,
     REQUIRED_LLM_KEYS,
     console,
+    migrate_legacy_config,
+    sanitized_config_text,
     version,
 )
 from .dependency import (
@@ -68,16 +72,17 @@ def format_active_modes(config: DeepPresenterConfig, request: InputRequest) -> s
     return ", ".join(modes)
 
 
-def onboard():
-    """Configure DeepPresenter (config.yaml and mcp.json)."""
+def onboard() -> None:
+    """Configure Slidex using Docker-free local MCP tools."""
     ensure_supported_platform()
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    migrate_legacy_config()
+    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     existing_config = None
     if is_onboarded():
         console.print("[yellow]Configuration already exists.[/yellow]")
         console.print(f"[dim]Config file: {CONFIG_FILE}[/dim]")
-        console.print(f"[dim]{CONFIG_FILE.read_text(encoding='utf-8').rstrip()}[/dim]")
+        console.print(f"[dim]{sanitized_config_text(CONFIG_FILE)}[/dim]")
 
         if not Confirm.ask(
             "\nDo you want to reconfigure (existing config will be backed up)?",
@@ -99,7 +104,7 @@ def onboard():
 
     console.print(
         Panel.fit(
-            f"[bold green]Welcome to DeepPresenter v{version}![/bold green]\n"
+            f"[bold green]Welcome to Slidex v{version}![/bold green]\n"
             "Let's configure your environment.",
             title="Onboarding",
         )
@@ -345,7 +350,7 @@ def generate(
         raise typer.Exit(code=2)
     if not is_onboarded():
         console.print(
-            "[bold red]Error:[/bold red] Please run 'deeppresenter onboard' (or 'pptagent onboard') first"
+            "[bold red]Error:[/bold red] Please run 'slidex onboard' first"
         )
         raise typer.Exit(code=1)
 
@@ -376,6 +381,8 @@ def generate(
                 nonlocal local_model_pid
                 local_model_pid = setup_inference()
             session_id = str(uuid.uuid4())[:8]
+
+            from deeppresenter.main import AgentLoop
 
             loop = AgentLoop(
                 config=config,
@@ -455,37 +462,26 @@ def generate(
                 pass
 
 
-def config():
-    """Show current configuration."""
+def config() -> None:
+    """Show the complete current configuration with secrets redacted."""
     if not is_onboarded():
         console.print(
-            "[bold red]Not configured.[/bold red] Run 'deeppresenter onboard' (or 'pptagent onboard') first."
+            "[bold red]Not configured.[/bold red] Run 'slidex onboard' first."
         )
         return
 
     console.print(f"\n[bold]Config file:[/bold] {CONFIG_FILE}")
     console.print(f"[bold]MCP file:[/bold] {MCP_FILE}")
 
-    with open(CONFIG_FILE) as f:
-        config_data = yaml.safe_load(f)
-
-    console.print("\n[bold cyan]LLM Configuration:[/bold cyan]")
-    for key in [
-        "research_agent",
-        "design_agent",
-        "long_context_model",
-        "vision_model",
-        "t2i_model",
-    ]:
-        if key in config_data:
-            llm = config_data[key]
-            if isinstance(llm, dict):
-                console.print(f"  {key}: {llm.get('model', 'N/A')}")
+    console.print("\n[bold cyan]Configuration (secrets redacted):[/bold cyan]")
+    console.print(sanitized_config_text(CONFIG_FILE))
 
 
-def clean():
-    """Remove DeepPresenter user config and cache directories."""
+def clean() -> None:
+    """Remove Slidex state and optionally migrated legacy state."""
     targets = [CONFIG_DIR, CACHE_DIR]
+    legacy_targets = [LEGACY_CONFIG_DIR, LEGACY_CACHE_DIR]
+    targets.extend(path for path in legacy_targets if path.exists())
     console.print("[bold yellow]This will remove:[/bold yellow]")
     for path in targets:
         console.print(f"  • {path}")

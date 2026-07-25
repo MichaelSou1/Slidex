@@ -19,8 +19,8 @@
         ]
     },
     {
-        "name": "deeppresenter",
-        "description": "Artifact inspection tools for deeppresenter",
+        "name": "slidex",
+        "description": "Artifact inspection tools for Slidex",
         "command": "python3",
         "args": [
             "$PACKAGE_DIR/tools/reflect.py"

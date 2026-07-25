@@ -43,6 +43,7 @@ from deeppresenter.utils.log import (
     debug,
     info,
     timer,
+    sanitize_log_text,
 )
 from deeppresenter.utils.typings import (
     ChatMessage,
@@ -369,11 +370,19 @@ class Agent:
                 )
         return observations
 
-    def log_message(self, msg: ChatMessage):
-        if len(msg.text) < MAX_LOGGING_LENGTH:
-            debug(f"{self.name}: {msg.text}")
-        else:
-            debug(f"{self.name}: {msg.text[:MAX_LOGGING_LENGTH]}...")
+    def log_message(self, msg: ChatMessage) -> None:
+        """Log bounded metadata and sanitized text, never inline binary content."""
+        text = sanitize_log_text(msg.text)
+        preview = text[:MAX_LOGGING_LENGTH]
+        suffix = "..." if len(text) > MAX_LOGGING_LENGTH else ""
+        debug(
+            "%s role=%s chars=%d content=%s%s",
+            self.name,
+            msg.role.value,
+            len(text),
+            preview,
+            suffix,
+        )
 
     async def compact_history(self, keep_head: int = 10, keep_tail: int = 4):
         """Summarize the history."""

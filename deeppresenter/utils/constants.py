@@ -1,4 +1,4 @@
-"""deeppresenter 全局常量定义"""
+"""Global constants for Slidex and its compatibility aliases."""
 
 import logging
 import os
@@ -8,8 +8,15 @@ from pathlib import Path
 PACKAGE_DIR = Path(__file__).parent.parent
 
 # ============ Logging ===========
-LOGGING_LEVEL = int(os.getenv("DEEPPRESENTER_LOG_LEVEL", logging.INFO))
-MAX_LOGGING_LENGTH = int(os.getenv("DEEPPRESENTER_MAX_LOGGING_LENGTH", 1024))
+LOGGING_LEVEL = int(
+    os.getenv("SLIDEX_LOG_LEVEL", os.getenv("DEEPPRESENTER_LOG_LEVEL", logging.INFO))
+)
+MAX_LOGGING_LENGTH = int(
+    os.getenv(
+        "SLIDEX_MAX_LOGGING_LENGTH",
+        os.getenv("DEEPPRESENTER_MAX_LOGGING_LENGTH", 1024),
+    )
+)
 
 # ============ Agent  ============
 RETRY_TIMES = int(os.getenv("RETRY_TIMES", 10))
@@ -29,10 +36,13 @@ MCP_CONNECT_TIMEOUT = int(os.getenv("MCP_CONNECT_TIMEOUT", 120))
 MCP_CALL_TIMEOUT = int(os.getenv("MCP_CALL_TIMEOUT", 1800))
 WORKSPACE_BASE = Path(
     os.getenv(
-        "DEEPPRESENTER_WORKSPACE_BASE",
-        str(Path.home() / ".cache/deeppresenter"),
+        "SLIDEX_WORKSPACE_BASE",
+        os.getenv(
+            "DEEPPRESENTER_WORKSPACE_BASE",
+            str(Path.home() / ".cache" / "slidex"),
+        ),
     )
-)
+).expanduser()
 TOOL_CACHE = PACKAGE_DIR / ".tools.json"
 
 GLOBAL_ENV_LIST = [

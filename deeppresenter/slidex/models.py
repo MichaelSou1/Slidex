@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -491,6 +492,7 @@ class PolicyCallRecord(SlidexModel):
 
 class TrajectoryStep(SlidexModel):
     schema_version: Literal["2.0"] = SCHEMA_VERSION
+    step_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     step_index: int = Field(ge=0)
     action: dict[str, Any]
     observation: dict[str, Any] = Field(default_factory=dict)

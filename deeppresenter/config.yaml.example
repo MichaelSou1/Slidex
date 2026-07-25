@@ -1,4 +1,4 @@
-# DeepPresenter configuration
+# Slidex configuration
 context_folding: true
 offline_mode: false
 async_tool_mode: false
@@ -21,7 +21,7 @@ long_context_model:
   api_key: "$SLIDEX_API_KEY"
   capabilities: { text: true, vision: false, tools: false, structured_output: false }
 
-# # LiteLLM provider example — pip install pptagent[litellm]
+# # LiteLLM provider example — pip install slidex[litellm]
 # # Routes to 100+ providers (Anthropic, Gemini, Bedrock, etc.) without a proxy.
 # research_agent:
 #   provider: "litellm"

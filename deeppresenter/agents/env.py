@@ -143,7 +143,9 @@ class AgentEnv:
         finally:
             elapsed = time.time() - start_time
             debug(
-                f"Tool `{tool_call.function.name}` execution took {elapsed:.2f} seconds"
+                "tool_timing tool=%s latency_ms=%.3f",
+                tool_call.function.name,
+                elapsed * 1000,
             )
             self.timing_dict[tool_call.function.name].total_time += elapsed
         if result.isError:

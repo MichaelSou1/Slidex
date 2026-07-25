@@ -29,7 +29,7 @@ from deeppresenter.utils.webview import (
 )
 from pptagent.model_utils import _get_lid_model
 
-mcp = FastMCP("DeepPresenter", lifespan=playwright_lifespan)
+mcp = FastMCP("Slidex", lifespan=playwright_lifespan)
 CONFIG = DeepPresenterConfig.load_from_file(os.getenv("CONFIG_FILE"))
 LID_MODEL = _get_lid_model()
 REFLECTIVE_DESIGN = CONFIG.design_agent.is_multimodal and CONFIG.heavy_reflect

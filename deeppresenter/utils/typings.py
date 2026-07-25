@@ -165,8 +165,14 @@ class Cost(BaseModel):
 
 
 class ConvertType(StrEnum):
+    SLIDEX = "slidex"
     DEEPPRESENTER = "deeppresenter"
     PPTAGENT = "pptagent"
+
+    @property
+    def is_legacy_template(self) -> bool:
+        """Return whether this mode uses the original template backend."""
+        return self is ConvertType.PPTAGENT
 
 
 class PowerPointType(StrEnum):
@@ -184,7 +190,7 @@ class InputRequest(BaseModel):
     num_pages: str | None = None
     template: str | None = None
     powerpoint_type: PowerPointType = PowerPointType.WIDE_SCREEN
-    convert_type: ConvertType = ConvertType.DEEPPRESENTER
+    convert_type: ConvertType = ConvertType.SLIDEX
     enable_planner: bool = False
     extra_info: dict[str, Any] = Field(default_factory=dict)
 

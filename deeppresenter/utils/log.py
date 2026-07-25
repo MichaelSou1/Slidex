@@ -1,5 +1,6 @@
 import functools
 import inspect
+import re
 import logging
 import time
 import traceback
@@ -37,6 +38,19 @@ _context_logger: ContextVar[logging.Logger | None] = ContextVar(
 )
 P = ParamSpec("P")
 R = TypeVar("R")
+
+
+_SECRET_PATTERN = re.compile(
+    r"(?i)(api[_-]?key|authorization|access[_-]?token|secret)(\s*[:=]\s*)([^\s,;]+)"
+)
+_DATA_URL_PATTERN = re.compile(r"data:(?:image|application)/[^;]+;base64,[A-Za-z0-9+/=]+")
+
+
+def sanitize_log_text(value: Any) -> str:
+    """Remove credentials and bulky inline binary payloads from log text."""
+    text = str(value)
+    text = _SECRET_PATTERN.sub(r"\1\2***REDACTED***", text)
+    return _DATA_URL_PATTERN.sub("<base64-payload-redacted>", text)
 
 
 def create_logger(
@@ -132,7 +146,7 @@ def exception(msg, *args, **kwargs):
 
 
 class timer:
-    """Timer context manager and decorator"""
+    """Timer context manager and decorator with structured timing fields."""
 
     def __init__(self, name: str = None):
         self.name = name
@@ -144,8 +158,7 @@ class timer:
 
     def __exit__(self, exc_type, exc_value, traceback):
         elapsed = time.time() - self.start_time
-        if elapsed > 1:
-            debug(f"{self.name} took {elapsed:.2f} seconds")
+        debug("timing operation=%s latency_ms=%.3f", self.name or "unnamed", elapsed * 1000)
 
     @overload
     def __call__(
@@ -165,10 +178,11 @@ class timer:
                     return await func(*args, **kwargs)
                 finally:
                     elapsed = time.time() - start
-                    if elapsed > 1:
-                        debug(
-                            f"{self.name or func.__name__} took {elapsed:.2f} seconds"
-                        )
+                    debug(
+                        "timing operation=%s latency_ms=%.3f",
+                        self.name or func.__name__,
+                        elapsed * 1000,
+                    )
 
             return async_wrapper
         else:
@@ -180,10 +194,11 @@ class timer:
                     return func(*args, **kwargs)
                 finally:
                     elapsed = time.time() - start
-                    if elapsed > 1:
-                        debug(
-                            f"{self.name or func.__name__} took {elapsed:.2f} seconds"
-                        )
+                    debug(
+                        "timing operation=%s latency_ms=%.3f",
+                        self.name or func.__name__,
+                        elapsed * 1000,
+                    )
 
             return sync_wrapper
 

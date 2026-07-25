@@ -6,6 +6,8 @@ import hashlib
 import time
 from typing import Protocol
 
+from deeppresenter.utils.log import debug
+
 from deeppresenter.slidex.models import (
     DefectClass,
     Evidence,
@@ -65,8 +67,21 @@ def inspect_safely(
     """Convert inspector bugs into explicit errors rather than false passes."""
     started = time.perf_counter()
     try:
-        return inspector.inspect(artifact)
+        results = inspector.inspect(artifact)
+        debug(
+            "inspector_timing inspector=%s artifact_id=%s latency_ms=%.3f",
+            inspector.name,
+            artifact.artifact_id,
+            (time.perf_counter() - started) * 1000,
+        )
+        return results
     except Exception as exc:
+        debug(
+            "inspector_timing inspector=%s artifact_id=%s latency_ms=%.3f status=error",
+            inspector.name,
+            artifact.artifact_id,
+            (time.perf_counter() - started) * 1000,
+        )
         return [
             result(
                 inspector,

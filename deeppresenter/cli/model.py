@@ -105,8 +105,9 @@ def setup_inference() -> int | None:
 
 def is_onboarded() -> bool:
     """Check if user has completed onboarding."""
-    from .common import CONFIG_FILE, MCP_FILE
+    from .common import CONFIG_FILE, MCP_FILE, migrate_legacy_config
 
+    migrate_legacy_config()
     return CONFIG_FILE.exists() and MCP_FILE.exists()
 
 

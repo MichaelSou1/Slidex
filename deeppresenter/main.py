@@ -136,13 +136,19 @@ class AgentLoop:
         self.intermediate_output: dict[str, str | Path] = {}
         self.agent = None
         set_logger(
-            f"deeppresenter-loop-{self.workspace.stem}",
-            self.workspace / ".history" / "deeppresenter-loop.log",
+            f"slidex-loop-{self.workspace.stem}",
+            self.workspace / ".history" / "slidex-loop.log",
         )
         debug(f"Initialized AgentLoop with workspace={self.workspace}")
-        debug(f"Config: {self.config.model_dump_json(indent=2)}")
+        debug(
+            "Config loaded: path=%s hash=%s",
+            self.config.file_path,
+            hashlib.sha256(
+                self.config.model_dump_json(exclude={"file_path"}).encode()
+            ).hexdigest(),
+        )
 
-    @timer("DeepPresenter Loop")
+    @timer("Slidex Loop")
     async def run(
         self,
         request: InputRequest,
@@ -179,10 +185,18 @@ class AgentLoop:
             agent_env.register_tool(
                 SubAgent.delegate(self.config, agent_env, self.workspace, self.language)
             )
-            if "deeppresenter" in agent_env._server_tools:
-                agent_env._server_tools["deeppresenter"] = [
+            inspection_server = next(
+                (
+                    name
+                    for name in ("slidex", "deeppresenter")
+                    if name in agent_env._server_tools
+                ),
+                None,
+            )
+            if inspection_server is not None:
+                agent_env._server_tools[inspection_server] = [
                     tool
-                    for tool in agent_env._server_tools["deeppresenter"]
+                    for tool in agent_env._server_tools[inspection_server]
                     if tool != "inspect_slide"
                 ]
                 agent_env._tool_to_server.pop("inspect_slide", None)
@@ -473,7 +487,10 @@ class AgentLoop:
             agent_env.register_tool(inspect_slide)
             agent_env.register_tool(apply_repair)
             agent_env.register_tool(render_slide)
-            hello_message = f"DeepPresenter running in {self.workspace}, with {len(request.attachments)} attachments, prompt={request.instruction}"
+            hello_message = (
+                f"Slidex request_id={request.task_id} episode_id={self.workspace.stem} "
+                f"running in {self.workspace}, attachments={len(request.attachments)}"
+            )
             modes = []
             if self.config.offline_mode:
                 modes.append("Offline Mode")

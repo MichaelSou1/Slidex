@@ -775,42 +775,44 @@ Research -> Design           reset -> step -> reward
 
 # Phase 11：品牌、配置和兼容迁移
 
+> 状态（2026-07-26）：Slidex 品牌与主命令、配置迁移、脱敏日志、关联观测和 legacy backend trust downgrade 已完成。
+
 ## 11.1 包与命令
 
-- [ ] 将项目展示名称改为 Slidex。
-- [ ] 在 `pyproject.toml` 增加 `slidex = "deeppresenter.cli:main"`。
-- [ ] 暂时保留 `pptagent` 为兼容 alias，并输出 deprecation 提示策略。
-- [ ] 保留 `pptagent-mcp` 仅服务 legacy backend；若新 MCP 需要入口，使用独立 `slidex-mcp`。
-- [ ] 更新 package description、keywords 和默认 workspace 环境变量。
+- [x] 将项目展示名称改为 Slidex。
+- [x] 在 `pyproject.toml` 增加 `slidex = "deeppresenter.cli:main"`。
+- [x] 暂时保留 `pptagent` 为兼容 alias，并输出 deprecation 提示策略。
+- [x] 保留 `pptagent-mcp` 仅服务 legacy backend；若新 MCP 需要入口，使用独立 `slidex-mcp`。
+- [x] 更新 package description、keywords 和默认 workspace 环境变量。
 
 ## 11.2 配置路径
 
-- [ ] 引入 `SLIDEX_WORKSPACE_BASE`，兼容读取旧 `DEEPPRESENTER_WORKSPACE_BASE`。
-- [ ] 引入 Slidex config directory，提供旧配置迁移而非静默丢失。
-- [ ] 配置输出隐藏 API key。
-- [ ] onboarding 默认生成 Docker-free MCP 配置。
-- [ ] outbound policy/critic endpoints 均采用 OpenAI-compatible `base_url/model/api_key`。
+- [x] 引入 `SLIDEX_WORKSPACE_BASE`，兼容读取旧 `DEEPPRESENTER_WORKSPACE_BASE`。
+- [x] 引入 Slidex config directory，提供旧配置迁移而非静默丢失。
+- [x] 配置输出隐藏 API key。
+- [x] onboarding 默认生成 Docker-free MCP 配置。
+- [x] outbound policy/critic endpoints 均采用 OpenAI-compatible `base_url/model/api_key`。
 
 ## 11.3 日志与观测
 
-- [ ] 日志名称从 DeepPresenter 迁移为 Slidex，同时兼容旧 history reader。
-- [ ] 每个 request/episode/step/artifact 使用关联 ID。
-- [ ] 记录 inspector 和 tool timing。
-- [ ] 记录 LLM usage 和 estimated cost，但不将 provider 定价硬编码为 reward truth。
-- [ ] 模型调用日志不输出完整附件、base64 图片或 secret。
+- [x] 日志名称从 DeepPresenter 迁移为 Slidex，同时兼容旧 history reader。
+- [x] 每个 request/episode/step/artifact 使用关联 ID。
+- [x] 记录 inspector 和 tool timing。
+- [x] 记录 LLM usage 和 estimated cost，但不将 provider 定价硬编码为 reward truth。
+- [x] 模型调用日志不输出完整附件、base64 图片或 secret。
 
 ## 11.4 Legacy compatibility
 
-- [ ] legacy `ConvertType.PPTAGENT` 仍能走原 template backend。
-- [ ] legacy backend 输出也可包装为 artifact，并运行有限的 final critic。
-- [ ] 明确 legacy PPTX 缺少完整 HTML native IR 时的 trust downgrade。
-- [ ] 不为追求统一而重写 `pptagent/` 全部内部模块。
+- [x] legacy `ConvertType.PPTAGENT` 仍能走原 template backend。
+- [x] legacy backend 输出也可包装为 artifact，并运行有限的 final critic。
+- [x] 明确 legacy PPTX 缺少完整 HTML native IR 时的 trust downgrade。
+- [x] 不为追求统一而重写 `pptagent/` 全部内部模块。
 
 ### Phase 11 退出条件
 
-- [ ] 新用户看到和调用的是 Slidex。
-- [ ] 旧 CLI/配置有可控兼容路径。
-- [ ] legacy backend 不阻塞 Slidex IR/critic/RL 主线。
+- [x] 新用户看到和调用的是 Slidex。
+- [x] 旧 CLI/配置有可控兼容路径。
+- [x] legacy backend 不阻塞 Slidex IR/critic/RL 主线。
 
 ---
 

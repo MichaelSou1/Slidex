@@ -56,7 +56,7 @@ ASPECT_RATIOS = {
 }
 
 _REQUIRED_PACKAGES = ("fast-glob", "minimist", "pptxgenjs", "playwright", "sharp")
-_CACHE_NODE_MODULES = Path.home() / ".cache/deeppresenter/html2pptx/node_modules"
+_CACHE_NODE_MODULES = Path.home() / ".cache/slidex/html2pptx/node_modules"
 SCRIPT_PATH = PACKAGE_DIR / "html2pptx" / "html2pptx_cli.js"
 LOCAL_NM = SCRIPT_PATH.parent / "node_modules"
 
@@ -255,7 +255,7 @@ async def convert_html_to_pptx(
         raise RuntimeError(
             "html2pptx Node.js dependencies are missing: "
             + ", ".join(missing_packages)
-            + ". Run `deeppresenter onboard` first."
+            + ". Run `slidex onboard` first."
         )
     process_env = os.environ.copy()
     existing_node_path = process_env.get("NODE_PATH")

@@ -1,1 +1,1 @@
-"""DeepPresenter agents module"""
+"""Slidex agent implementations."""

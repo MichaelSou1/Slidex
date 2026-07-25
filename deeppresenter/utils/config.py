@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 from itertools import cycle, product
 from pathlib import Path
 from typing import Any, Literal
@@ -28,6 +29,19 @@ from deeppresenter.utils.constants import (
     RETRY_TIMES,
 )
 from deeppresenter.utils.log import debug, logging_openai_exceptions
+
+
+def _estimated_cost(response: ChatCompletion) -> float | None:
+    """Read provider-reported cost without embedding mutable pricing tables."""
+    usage = response.usage
+    if usage is None:
+        return None
+    extra = getattr(usage, "model_extra", None) or {}
+    for key in ("cost", "estimated_cost", "total_cost"):
+        value = extra.get(key)
+        if isinstance(value, (int, float)) and value >= 0:
+            return float(value)
+    return None
 
 
 def get_json_from_response(response: str) -> dict | list:
@@ -247,7 +261,13 @@ class Endpoint(BaseModel):
                 raise ValueError("Tool-call arguments must be a JSON object")
         if not message.tool_calls and not message.content:
             raise ValueError("Provider returned empty assistant content")
-        debug(f"Response from {self.model}: {message}")
+        content = message.content or ""
+        debug(
+            "Model response received: model=%s chars=%d tool_calls=%d",
+            self.model,
+            len(content),
+            len(message.tool_calls or []),
+        )
         return response
 
 
@@ -373,6 +393,7 @@ class LLM(BaseModel):
             for attempt in range(1, retry_times + 1):
                 endpoint = next(iter_endpoints)
                 try:
+                    started_at = time.perf_counter()
                     response = await endpoint.call(
                         messages,
                         self.soft_response_parsing,
@@ -391,6 +412,8 @@ class LLM(BaseModel):
                         "usage": response.usage.model_dump(mode="json")
                         if response.usage
                         else {},
+                        "estimated_cost": _estimated_cost(response),
+                        "latency_ms": (time.perf_counter() - started_at) * 1000,
                         "finish_reasons": [
                             choice.finish_reason for choice in response.choices
                         ],
@@ -408,6 +431,16 @@ class LLM(BaseModel):
                         "response_hash": hashlib.sha256(payload.encode()).hexdigest(),
                         "attempt": attempt,
                     }
+                    debug(
+                        "model_call endpoint=%s model=%s prompt_tokens=%s "
+                        "completion_tokens=%s estimated_cost=%s latency_ms=%.3f",
+                        self._last_call["endpoint_identifier"],
+                        endpoint.model,
+                        self._last_call["usage"].get("prompt_tokens", 0),
+                        self._last_call["usage"].get("completion_tokens", 0),
+                        self._last_call["estimated_cost"],
+                        self._last_call["latency_ms"],
+                    )
                     return response
                 except (ModelCapabilityError, ValidationError):
                     raise

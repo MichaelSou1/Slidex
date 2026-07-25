@@ -3,9 +3,9 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pptagent"
+name = "slidex"
 authors = [{ name = "Hao Zheng", email = "wszh712811@gmail.com" }]
-description = "An Agentic Framework for Reflective PowerPoint Generation"
+description = "Source-aware agentic presentation generation, inspection, and repair"
 readme = "pptagent/README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -27,6 +27,8 @@ keywords = [
     "llm",
     "ai",
     "document-processing",
+    "slide-inspection",
+    "agentic-rl",
 ]
 dependencies = [
     "aiohttp>=3.9.0",
@@ -103,10 +105,11 @@ full = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/icip-cas/PPTAgent"
-"Bug Tracker" = "https://github.com/icip-cas/PPTAgent/issues"
+"Homepage" = "https://github.com/icip-cas/Slidex"
+"Bug Tracker" = "https://github.com/icip-cas/Slidex/issues"
 
 [project.scripts]
+slidex = "deeppresenter.cli:main"
 deeppresenter = "deeppresenter.cli:main"
 pptagent = "deeppresenter.cli:main"
 pptagent-mcp = "pptagent.mcp_server:main"
