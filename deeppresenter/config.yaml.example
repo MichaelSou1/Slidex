@@ -4,22 +4,32 @@ offline_mode: false
 async_tool_mode: false
 
 research_agent:
-  base_url: "https://openrouter.ai/api/v1"
-  model: "anthropic/claude-sonnet-4.5"
-  api_key: "$SLIDEX_API_KEY"
+  base_url: "https://aigc.sankuai.com/v1/openai/native"
+  model: "gemini-3.6-flash"
+  api_key: "$FRIDAY_API_KEY"
   capabilities: { text: true, vision: true, tools: true, structured_output: true }
+  sampling_parameters: { "temperature": 0, "top_p": 1, "reasoning_effort": "minimal" }
+  requests_per_minute: 20
+  max_concurrent: 1
 
 design_agent:
-  base_url: "https://openrouter.ai/api/v1"
-  model: "google/gemini-3-pro-preview"
-  api_key: "$SLIDEX_API_KEY"
+  # Frozen generation policy: all PPT generation uses Friday Gemini 3.6 Flash.
+  base_url: "https://aigc.sankuai.com/v1/openai/native"
+  model: "gemini-3.6-flash"
+  api_key: "$FRIDAY_API_KEY"
   capabilities: { text: true, vision: true, tools: true, structured_output: true }
+  sampling_parameters: { "temperature": 0, "top_p": 1, "reasoning_effort": "minimal" }
+  requests_per_minute: 20
+  max_concurrent: 1
 
 long_context_model:
-  base_url: "https://open.bigmodel.cn/api/paas/v4/"
-  model: "glm-4.5"
-  api_key: "$SLIDEX_API_KEY"
-  capabilities: { text: true, vision: false, tools: false, structured_output: false }
+  base_url: "https://aigc.sankuai.com/v1/openai/native"
+  model: "gemini-3.6-flash"
+  api_key: "$FRIDAY_API_KEY"
+  capabilities: { text: true, vision: true, tools: false, structured_output: true }
+  sampling_parameters: { "temperature": 0, "top_p": 1, "reasoning_effort": "minimal" }
+  requests_per_minute: 20
+  max_concurrent: 1
 
 # # LiteLLM provider example — pip install slidex[litellm]
 # # Routes to 100+ providers (Anthropic, Gemini, Bedrock, etc.) without a proxy.
@@ -45,11 +55,23 @@ long_context_model:
 
 # Slidex critic and artifact configuration. Endpoints are OpenAI-compatible.
 critic_model:
-  base_url: "https://openrouter.ai/api/v1"
-  model: "google/gemini-3-pro-preview"
-  api_key: "$SLIDEX_API_KEY"
+  # Keep neural critic controls on the same Friday model as required by Phase 13.
+  base_url: "https://aigc.sankuai.com/v1/openai/native"
+  model: "gemini-3.6-flash"
+  api_key: "$FRIDAY_API_KEY"
   capabilities: { text: true, vision: true, tools: false, structured_output: true }
-  sampling_parameters: { "temperature": 0, "top_p": 1, "seed": 42 }
+  sampling_parameters: { "temperature": 0, "top_p": 1, "reasoning_effort": "minimal" }
+  requests_per_minute: 20
+  max_concurrent: 1
+
+judge_model:
+  # Frozen independent secondary judge; this model must never generate or repair PPTs.
+  base_url: "https://ark.cn-beijing.volces.com/api/v3"
+  model: "doubao-seed-2-1-turbo-260628"
+  api_key: "$ARK_JUDGE_API_KEY"
+  capabilities: { text: true, vision: true, tools: false, structured_output: true }
+  sampling_parameters: { "temperature": 0, "top_p": 1 }
+  max_concurrent: 4
 
 # semantic_model is optional and remains independent from policy history.
 # semantic_model:
@@ -60,6 +82,7 @@ critic_model:
 #   sampling_parameters: { "temperature": 0, "top_p": 1, "seed": 42 }
 
 slidex:
+  enforce_model_role_policy: true
   taxonomy_version: "1.0"
   router_version: "1.0"
   reward_version: "1.0"

@@ -83,9 +83,17 @@ def test_config_dump_excludes_api_keys(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "research_agent": _model("research"),
-                "design_agent": _model("design"),
+                "design_agent": {
+                    **_model("gemini-3.6-flash"),
+                    "base_url": "https://aigc.sankuai.com/v1/openai/native",
+                    "requests_per_minute": 20,
+                },
                 "long_context_model": _model("long"),
                 "critic_model": _model("critic"),
+                "judge_model": {
+                    **_model("doubao-seed-2-1-turbo-260628"),
+                    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                },
             }
         ),
         encoding="utf-8",
@@ -93,6 +101,8 @@ def test_config_dump_excludes_api_keys(tmp_path: Path) -> None:
     config = DeepPresenterConfig.load_from_file(str(path))
     assert "top-secret" not in config.model_dump_json()
     assert config.critic_model is not config.design_agent
+    assert config.judge_model is not config.design_agent
+    assert config.judge_model.model_name == "doubao-seed-2-1-turbo-260628"
 
 
 def test_legacy_convert_type_remains_explicit() -> None:
@@ -109,3 +119,52 @@ def test_logs_redact_secrets_and_base64() -> None:
     assert "secret" not in text
     assert "QUJD" not in text
     assert "attachment.pdf" in text
+
+
+def test_frozen_example_assigns_friday_generation_and_ark_judge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FRIDAY_API_KEY", "friday-test")
+    monkeypatch.setenv("ARK_JUDGE_API_KEY", "ark-test")
+    config = DeepPresenterConfig.load_from_file("deeppresenter/config.yaml.example")
+    assert config.design_agent.model_name == "gemini-3.6-flash"
+    assert config.design_agent._endpoints[0].base_url == (
+        "https://aigc.sankuai.com/v1/openai/native"
+    )
+    assert config.design_agent.requests_per_minute == 20
+    assert config.critic_model.model_name == "gemini-3.6-flash"
+    assert config.judge_model.model_name == "doubao-seed-2-1-turbo-260628"
+    assert config.judge_model._endpoints[0].base_url == (
+        "https://ark.cn-beijing.volces.com/api/v3"
+    )
+
+
+def test_model_role_policy_rejects_generator_or_judge_drift(tmp_path: Path) -> None:
+    base = {
+        "slidex": {"enforce_model_role_policy": True},
+        "research_agent": _model("research"),
+        "long_context_model": _model("long"),
+        "design_agent": {
+            **_model("gemini-3.6-flash"),
+            "base_url": "https://aigc.sankuai.com/v1/openai/native",
+            "requests_per_minute": 20,
+        },
+        "judge_model": {
+            **_model("doubao-seed-2-1-turbo-260628"),
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        },
+    }
+    path = tmp_path / "policy.yaml"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    DeepPresenterConfig.load_from_file(str(path))
+
+    base["design_agent"]["model"] = "other-generator"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    with pytest.raises(ValueError, match="generation policy"):
+        DeepPresenterConfig.load_from_file(str(path))
+
+    base["design_agent"]["model"] = "gemini-3.6-flash"
+    base["judge_model"]["model"] = "other-judge"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    with pytest.raises(ValueError, match="Judge policy"):
+        DeepPresenterConfig.load_from_file(str(path))

@@ -118,6 +118,62 @@ def weighted_kappa(first: list[int], second: list[int]) -> float:
     return 1 - _safe(observed, expected) if expected else 1.0
 
 
+def paired_effect(
+    control: list[bool], treatment: list[bool], *, seed: int = 0, samples: int = 2000
+) -> dict[str, float | list[float]]:
+    """Report paired absolute/relative effects with a deterministic bootstrap CI."""
+    if len(control) != len(treatment) or not control:
+        raise ValueError("paired effects require equally sized non-empty samples")
+    control_rate = sum(control) / len(control)
+    treatment_rate = sum(treatment) / len(treatment)
+    absolute = treatment_rate - control_rate
+    rng = random.Random(seed)
+    estimates: list[float] = []
+    for _ in range(samples):
+        indices = [rng.randrange(len(control)) for _ in control]
+        estimates.append(
+            sum(int(treatment[index]) - int(control[index]) for index in indices)
+            / len(indices)
+        )
+    estimates.sort()
+    low = estimates[int(samples * 0.025)]
+    high = estimates[min(samples - 1, int(samples * 0.975))]
+    return {
+        "control_rate": control_rate,
+        "treatment_rate": treatment_rate,
+        "absolute_difference": absolute,
+        "relative_difference": _safe(absolute, control_rate),
+        "risk_ratio": _safe(treatment_rate, control_rate),
+        "bootstrap_95_ci": [low, high],
+    }
+
+
+def repair_metrics(results: Iterable[CaseResult]) -> dict[str, float]:
+    records = list(results)
+    attempted = [record for record in records if record.target_removed is not None]
+    first_round = [record for record in attempted if record.repair_rounds >= 1]
+    three_round = [record for record in attempted if record.repair_rounds <= 3]
+    return {
+        "target_defect_removal_rate": _safe(
+            sum(record.target_removed is True for record in attempted), len(attempted)
+        ),
+        "first_round_success_rate": _safe(
+            sum(
+                record.target_removed is True and record.repair_rounds == 1
+                for record in first_round
+            ),
+            len(first_round),
+        ),
+        "three_round_cumulative_success_rate": _safe(
+            sum(record.target_removed is True for record in three_round),
+            len(three_round),
+        ),
+        "collateral_defect_rate": _safe(
+            sum(record.collateral_defects > 0 for record in attempted), len(attempted)
+        ),
+    }
+
+
 def summarize(
     cases: Iterable[EvaluationCase], results: Iterable[CaseResult]
 ) -> dict[str, object]:
@@ -158,6 +214,37 @@ def summarize(
             ),
             len(primary),
         ),
+        "repair": repair_metrics(records),
+        "automatic_e2e": {
+            "task_constraints_pass_rate": _safe(
+                sum(r.task_constraints_passed is True for r in records),
+                sum(r.task_constraints_passed is not None for r in records),
+            ),
+            "mean_section_coverage": _safe(
+                sum(
+                    r.section_coverage or 0
+                    for r in records
+                    if r.section_coverage is not None
+                ),
+                sum(r.section_coverage is not None for r in records),
+            ),
+            "mean_grounding_score": _safe(
+                sum(
+                    r.grounding_score or 0
+                    for r in records
+                    if r.grounding_score is not None
+                ),
+                sum(r.grounding_score is not None for r in records),
+            ),
+            "page_count_pass_rate": _safe(
+                sum(r.page_count_passed is True for r in records),
+                sum(r.page_count_passed is not None for r in records),
+            ),
+            "render_fidelity_pass_rate": _safe(
+                sum(r.render_fidelity_passed is True for r in records),
+                sum(r.render_fidelity_passed is not None for r in records),
+            ),
+        },
         "outcomes": dict(Counter(r.outcome.value for r in records)),
         "integrity_failures": sum(
             case.integrity_status != "valid" for case in case_map.values()

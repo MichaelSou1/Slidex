@@ -6,7 +6,8 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from .io import content_hash, write_immutable
+from .integrity import validate_lineage
+from .io import content_hash, file_hash, write_immutable
 from .models import (
     Arm,
     BenchmarkManifest,
@@ -90,3 +91,32 @@ def validate_paired_runs(runs: list[EvaluationRun]) -> None:
             raise ValueError(f"arms do not share initial artifact: {key}")
         if len({(run.max_repairs, run.model_budget) for run in group}) != 1:
             raise ValueError(f"arms do not share repair/model budget: {key}")
+
+
+def replay_case(
+    manifest: BenchmarkManifest,
+    result: EvaluationResult,
+    case_id: str,
+    cache_root: Path,
+) -> dict[str, object]:
+    """Verify all immutable inputs and lineage needed to replay one case."""
+    case = next((item for item in manifest.cases if item.case_id == case_id), None)
+    case_result = next(
+        (item for item in result.results if item.case_id == case_id), None
+    )
+    if case is None or case_result is None:
+        raise ValueError(f"unknown or missing case record: {case_id}")
+    failures = validate_lineage(case, cache_root, require_files=True)
+    input_path = cache_root / case.input_uri
+    if not input_path.exists() or file_hash(input_path) != case.content_sha256:
+        failures.append(f"case input mismatch:{case_id}")
+    return {
+        "case_id": case_id,
+        "replayable": not failures,
+        "failures": sorted(set(failures)),
+        "manifest_hash": manifest.manifest_hash,
+        "run_hash": result.immutable_hash,
+        "run_id": result.run.run_id,
+        "arm": result.run.arm.value,
+        "seed": result.run.seed,
+    }

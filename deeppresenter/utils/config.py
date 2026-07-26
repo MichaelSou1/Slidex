@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 import json_repair
 import yaml
+from dotenv import load_dotenv
+from filelock import FileLock
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 from openai.types.images_response import ImagesResponse
@@ -121,6 +123,7 @@ class Endpoint(BaseModel):
     capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
     client_kwargs: dict[str, Any] = Field(default_factory=dict)
     sampling_parameters: dict[str, Any] = Field(default_factory=dict)
+    requests_per_minute: int | None = Field(default=None, ge=1)
     _client: AsyncOpenAI | None = PrivateAttr(default=None)
 
     @model_validator(mode="before")
@@ -183,6 +186,31 @@ class Endpoint(BaseModel):
             kwargs["response_format"] = response_format
         return await litellm.acompletion(**kwargs)
 
+    async def _wait_for_rate_limit(self) -> None:
+        """Enforce a process-safe sliding interval for shared provider quotas."""
+        if self.requests_per_minute is None:
+            return
+        identity = hashlib.sha256(
+            f"{self.base_url or 'openai-default'}\0{self.model}".encode()
+        ).hexdigest()
+        directory = Path.home() / ".cache" / "slidex" / "rate_limits"
+        directory.mkdir(parents=True, exist_ok=True)
+        timestamp_path = directory / f"{identity}.timestamp"
+        lock = FileLock(str(directory / f"{identity}.lock"))
+        interval = 60 / self.requests_per_minute
+        while True:
+            with lock:
+                last = (
+                    float(timestamp_path.read_text(encoding="utf-8"))
+                    if timestamp_path.exists()
+                    else 0.0
+                )
+                wait = interval - (time.time() - last)
+                if wait <= 0:
+                    timestamp_path.write_text(str(time.time()), encoding="utf-8")
+                    return
+            await asyncio.sleep(wait)
+
     async def call(
         self,
         messages: list[dict[str, Any]],
@@ -193,6 +221,7 @@ class Endpoint(BaseModel):
     ) -> ChatCompletion:
         """Execute the supported Chat Completions subset."""
         self.require("text")
+        await self._wait_for_rate_limit()
         if any(
             block.get("type") == "image_url"
             for message in messages
@@ -286,6 +315,7 @@ class LLM(BaseModel):
     max_concurrent: int | None = None
     client_kwargs: dict[str, Any] = Field(default_factory=dict)
     sampling_parameters: dict[str, Any] = Field(default_factory=dict)
+    requests_per_minute: int | None = Field(default=None, ge=1)
     endpoints: list[dict[str, Any]] = Field(
         default_factory=list, exclude=True, repr=False
     )
@@ -337,12 +367,14 @@ class LLM(BaseModel):
                     capabilities=self.capabilities,
                     client_kwargs=self.client_kwargs,
                     sampling_parameters=self.sampling_parameters,
+                    requests_per_minute=self.requests_per_minute,
                 )
             )
         for endpoint_data in self.endpoints:
             endpoint = dict(endpoint_data)
             endpoint.setdefault("provider", self.provider)
             endpoint.setdefault("capabilities", self.capabilities.model_dump())
+            endpoint.setdefault("requests_per_minute", self.requests_per_minute)
             self._endpoints.append(Endpoint(**endpoint))
         if not self._endpoints:
             raise ValueError("At least one endpoint must be configured")
@@ -506,6 +538,7 @@ class SlidexConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     taxonomy_version: str = "1.0"
+    enforce_model_role_policy: bool = False
     router_version: str = "1.0"
     reward_version: str = "1.0"
     reward_terminal_hard_negative: float = Field(default=-1, ge=-1, le=0)
@@ -586,6 +619,10 @@ class DeepPresenterConfig(BaseModel):
     semantic_model: LLM | None = Field(
         default=None, description="Optional independent semantic critic model"
     )
+    judge_model: LLM | None = Field(
+        default=None,
+        description="Independent secondary evaluation judge; never used for generation",
+    )
     slidex: SlidexConfig = Field(default_factory=SlidexConfig)
 
     @model_validator(mode="before")
@@ -608,6 +645,32 @@ class DeepPresenterConfig(BaseModel):
                         "critic_model must explicitly declare capabilities: "
                         + ", ".join(sorted(missing))
                     )
+        slidex = value.get("slidex") or {}
+        enforce_policy = isinstance(slidex, dict) and bool(
+            slidex.get("enforce_model_role_policy", False)
+        )
+        if not enforce_policy:
+            return value
+        design = value.get("design_agent")
+        if not isinstance(design, dict):
+            raise ValueError("PPT generation policy requires design_agent")
+        if design.get("model") != "gemini-3.6-flash" or not str(
+            design.get("base_url", "")
+        ).startswith("https://aigc.sankuai.com/v1/openai/native"):
+            raise ValueError("PPT generation policy requires Friday gemini-3.6-flash")
+        if design.get("requests_per_minute") != 20:
+            raise ValueError(
+                "Friday generation policy requires requests_per_minute=20"
+            )
+        judge = value.get("judge_model")
+        if not isinstance(judge, dict):
+            raise ValueError("Judge policy requires judge_model")
+        if judge.get("model") != "doubao-seed-2-1-turbo-260628" or not str(
+            judge.get("base_url", "")
+        ).startswith("https://ark.cn-beijing.volces.com/api/v3"):
+            raise ValueError(
+                "Judge policy requires Ark doubao-seed-2-1-turbo-260628"
+            )
         return value
 
     def model_post_init(self, context):
@@ -629,6 +692,7 @@ class DeepPresenterConfig(BaseModel):
     @classmethod
     def load_from_file(cls, config_path: str | None = None) -> "DeepPresenterConfig":
         """Load configuration from file"""
+        load_dotenv()
         if config_path:
             config_file = Path(config_path)
         else:
@@ -652,6 +716,12 @@ class DeepPresenterConfig(BaseModel):
         ]
         if self.vision_model is not None:
             tasks.append(self.vision_model.validate())
+        if self.critic_model is not None:
+            tasks.append(self.critic_model.validate())
+        if self.semantic_model is not None:
+            tasks.append(self.semantic_model.validate())
+        if self.judge_model is not None:
+            tasks.append(self.judge_model.validate())
         await asyncio.gather(*tasks)
 
     def __getitem__(self, key: str) -> Any:

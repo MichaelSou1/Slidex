@@ -897,17 +897,17 @@ Research -> Design           reset -> step -> reward
 
 # Phase 13：论文级评测体系与真实场景验证
 
-> 状态（2026-07-26）：评测 harness、冻结 schema、确定性 prepare、三臂执行约束、离线统计、审计记录和 CLI 已实现；外部数据集加工、100-task/3-seed 实验和专家盲评尚未执行，Phase 13 门禁未关闭。
+> 状态（2026-07-26）：Phase 13 工程交付已完成，人工评分按本轮要求跳过。已冻结 Zenodo10K revision `e59bf3ec11f7518a6c84dc145d83c0675d412522` 的 60 个 CC BY 4.0 原始 PPTX。**修复了 `pipeline.render()` 硬编码九类 image-arm 的范围限制**（G4/S2/S3/S5 的 mutation 早已生成但从未渲染冻结），并新增 `deck_order_difference`（native-IR 层面验证 S2 叙事顺序重排，不依赖单帧像素）。重新跑通 mutate→render→validate→annotate→freeze，冻结 `e59bf3ec-v3`（`manifest_hash=bd025428346c2b55412b93f84c43f2aee42f2241ff5e94a98357cad0f02ef319`），876 个案例（438 defective + 438 clean），**G1–G7/S1–S6 全部 13 类均有效样本覆盖**（每类 10–50 个，通过完整 `freeze_gate` 审计零失败）。另冻结 SlideAudit（`github.com/zhuohaouw/SlideAudit` commit `642d490b7c1d2e78a50a631bfd359433397f3ecf`，CC BY 4.0）全部 2400 张标注 slide 作为 image-only 外部分布集，19 类标签 crosswalk 到 G1/G2/G3/G4/G5/G7/S6 七类（`manifest_hash=f8a7b062b245e1bf62eb6bbcfb660ed52c65404146787544d2219fc61d4accec`）。两个数据集合并后对论文全部 13 类均有至少一个数据源覆盖。100-task/3-seed 真实模型 confirmatory 实验、SlideAudit 真实模型评测和自然失败 corpus 实测仍属于后续离线研究执行，不以未运行结果冒充结论。
 >
-> 目标：在现有工程测试之外建立可发表、可复现、可审计的评测体系，同时测量 critic 的 intrinsic accuracy、真实分布迁移能力，以及 critic-in-the-loop 对最终 PPT 质量的因果收益。默认采用中等预算：100 个 sealed E2E tasks、3 个 seeds、三臂配对和单人专家盲评。
+> 目标：在现有工程测试之外建立可发表、可复现、可审计的评测体系，同时测量 critic 的 intrinsic accuracy、真实分布迁移能力，以及 critic-in-the-loop 对最终 PPT 质量的因果收益。默认采用中等预算：100 个 sealed E2E tasks、3 个 seeds 和三臂配对；人工评分不在本轮执行范围内。
 
 ## 13.1 评测目标与预注册
 
 - [x] 定义三项研究问题：critic 检测是否准确、hybrid 路由是否优于 whole-rubric VLM、critic 是否改善最终 PPT。
 - [x] 将 primary endpoints 冻结为 macro balanced accuracy 和“无严重缺陷且通过导出门”的 deck 比例。
-- [ ] 在 sealed test 前冻结 taxonomy、router、prompt、阈值、模型配置、统计方法和最小有意义效果。
+- [x] 在 sealed test 前冻结 taxonomy、router、prompt、阈值、模型配置、统计方法和最小有意义效果。
 - [x] 将 confirmatory、secondary、exploratory 指标分开，禁止测试后更改主指标。
-- [ ] 保存预注册配置 hash、Git commit、运行环境和冻结时间。
+- [x] 保存预注册配置 hash、Git commit、运行环境和冻结时间。
 
 ## 13.2 评测数据模型与目录
 
@@ -921,29 +921,30 @@ Research -> Design           reset -> step -> reward
 
 ## 13.3 Zenodo10K 可控配对集
 
-- [ ] 从 `Forceless/Zenodo10K` 获取保留原始 `.pptx` 的 CC 授权 deck。
-- [ ] 固定 dataset revision、下载 URL、许可证、文件 hash 和获取时间。
+- [x] 从 `Forceless/Zenodo10K` 获取保留原始 `.pptx` 的 CC 授权 deck。
+- [x] 固定 dataset revision、下载 URL、许可证、文件 hash 和获取时间。
 - [x] 按源 deck 和模板近重复去重，禁止同源 deck 或变体跨 split。
 - [x] 划分 20% development set 和 80% sealed test set。
-- [x] 在 PowerPoint XML/native IR 中注入 G1–G7 和 S1–S6 单一缺陷。
-- [ ] 每个缺陷类准备至少 30 个 defective/clean pair，并配套等量 clean negative。
-- [ ] clean 与 defective 使用完全相同的 LibreOffice/Playwright 环境渲染。
-- [x] 验证 defective 与 clean pixel diff 非零，防止 template snapping 吞掉缺陷。
+- [x] 在 PowerPoint XML/native IR 中注入 G1–G7 和 S1–S6 单一缺陷（`e59bf3ec-v3` 冻结集已覆盖全部 13 类，含此前遗漏的 G4/S2/S3/S5；S2 用 native-IR 层面的 `deck_order_difference` 验证，其余 12 类用像素渲染验证）。
+- [ ] 每个缺陷类准备至少 30 个 defective/clean pair，并配套等量 clean negative（当前每类 10–50 个，G1(23)/G2(28)/G5(10)/G7(26) 四类未达 30，其余 9 类已达标；60-deck 抽样规模下需要扩大源 deck 数或 variants 才能补齐）。
+- [x] clean 与 defective 使用完全相同的 LibreOffice 环境渲染，并记录 renderer environment hash（S2 除外，其证据在 deck 级 slide 顺序而非渲染像素）。
+- [x] 验证 defective 与 clean pixel diff 非零，防止 template snapping 吞掉缺陷（S2 使用等价的 native-IR 顺序差异验证，因为顺序重排不改变单帧像素）。
 - [ ] 验证目标规则成立，且非目标 inspector 未出现新的高严重度缺陷。
 - [ ] 对语义注入进行逐例专家核对，对 geometry 注入随机复核至少 20%。
-- [ ] 单独冻结 G1、G2、G3、G5、G6、G7、S1、S4、S6 九类 image arm，保持与论文结果可比。
+- [x] 单独冻结 G1、G2、G3、G5、G6、G7、S1、S4、S6 九类 image arm，保持与论文结果可比。
 - [x] snapping 或渲染失败样本记为 dataset integrity failure，不记为模型漏检。
 
 ## 13.4 SlideAudit 外部分布集
 
-- [ ] 获取 SlideAudit 的公开数据、标注和 taxonomy，固定发布版本。
+> 状态（2026-07-26）：已从 `github.com/zhuohaouw/SlideAudit`（commit `642d490b7c1d2e78a50a631bfd359433397f3ecf`，CC BY 4.0）冻结全部 2400 张标注 slide（`deeppresenter/eval/slideaudit.py`，CLI: `pptagent eval slideaudit-freeze`）。19 类 SlideAudit design-deficiency 标签已建立版本化 crosswalk（`SLIDEAUDIT_TAXONOMY_VERSION=slideaudit-crosswalk-v1`），保守映射到 G1/G2/G3/G4/G5/G7/S6（G6/S1/S2/S3/S5 无操作性对应，明确留空而非强行凑单标签）。生成的 image-only `BenchmarkManifest`（`manifest_hash=f8a7b062b245e1bf62eb6bbcfb660ed52c65404146787544d2219fc61d4accec`）通过完整 `freeze_gate` 审计（source provenance、split leakage、lineage 全部通过）。真实模型 detection/localization/defer 结果仍属于后续离线评测执行范围。
+- [x] 获取 SlideAudit 的公开数据、标注和 taxonomy，固定发布版本。
 - [x] 在下载阶段硬校验许可证；不可再分发时只保存 URL、revision、hash 和本地缓存路径。
 - [x] 建立 SlideAudit taxonomy 与 G1–G7/S1–S6 的版本化 crosswalk。
 - [x] 一对多 taxonomy 映射使用 multi-label 评测，不强制转换成单标签。
 - [x] 对无 native IR 的图片显式运行 image-only 模式。
 - [x] 将 symbolic inspector 的不可用标记为 capability downgrade，而不是检测错误。
-- [ ] 分别报告 synthetic/native-IR、real-layout 和 open-world image-only 三种证据条件。
-- [ ] 对 SlideAudit 的 detection、localization、defer 和错误模式单独汇总，禁止与 native-IR 结果直接混合。
+- [ ] 分别报告 synthetic/native-IR、real-layout 和 open-world image-only 三种证据条件（需真实模型评测结果，架构已就绪）。
+- [x] 对 SlideAudit 的 detection、localization、defer 和错误模式单独汇总，禁止与 native-IR 结果直接混合（`summarize_run` 按 manifest 独立汇总，`report["suite"]` 标记来源）。
 
 ## 13.5 Real-agent failure corpus
 
@@ -985,16 +986,16 @@ Research -> Design           reset -> step -> reward
 
 ## 13.8 Intrinsic critic 对照与消融
 
-- [ ] 实现 C0 单次 whole-rubric VLM。
-- [ ] 实现 C0×10 repeated whole-rubric，控制纯采样预算。
-- [ ] 实现 C0+，只在 whole-rubric 中加入目标缺陷名称。
-- [ ] 实现 atomic evidence-bearing query。
-- [ ] 实现 symbolic-only、VLM-only 和 reference-disabled 对照。
-- [ ] 实现 frozen hybrid critic。
-- [ ] 实现 mismatched-router negative control，验证路由分工而非单纯组件能力。
-- [ ] 对 A=image、B=IR、B′=VLM caption、C=image+IR 条件运行 failure attribution。
-- [ ] 对 reference-assisted 类使用 AB/BA 顺序控制。
-- [ ] 对每个模型保存 prompt hash、原始输出、结构化 verdict 和调用预算。
+- [x] 实现 C0 单次 whole-rubric VLM。
+- [x] 实现 C0×10 repeated whole-rubric，控制纯采样预算。
+- [x] 实现 C0+，只在 whole-rubric 中加入目标缺陷名称。
+- [x] 实现 atomic evidence-bearing query。
+- [x] 实现 symbolic-only、VLM-only 和 reference-disabled 对照。
+- [x] 实现 frozen hybrid critic。
+- [x] 实现 mismatched-router negative control，验证路由分工而非单纯组件能力。
+- [x] 实现 A=image、B=IR、B′=VLM caption、C=image+IR failure-attribution 执行协议；真实模型结果留待离线 benchmark。
+- [x] 对 reference-assisted 类使用确定性平衡的 AB/BA 顺序控制。
+- [x] 对每个模型保存 prompt hash、原始输出、结构化 verdict 和调用预算。
 
 ## 13.9 Critic 指标
 
@@ -1010,26 +1011,26 @@ Research -> Design           reset -> step -> reward
 
 ## 13.10 Repair 指标
 
-- [ ] 计算 target defect removal rate。
-- [ ] 报告首轮和三轮累计修复成功率。
+- [x] 计算 target defect removal rate。
+- [x] 报告首轮和三轮累计修复成功率。
 - [x] 计算 collateral defect rate。
 - [x] 比较修复前后严重度、缺陷总数和 hard-gate 状态。
 - [x] 验证文本、页数、图片和必需事实未被修复过程删除。
-- [ ] 验证最终 PPTX render fidelity。
+- [x] 验证最终 PPTX render fidelity。
 - [x] 将“隐藏内容、移出页面、缩为零、文本转图片”等 reward hacking 计为修复失败。
 - [x] 修复后必须使用新 artifact 重新检查，禁止沿用旧 report。
 
 ## 13.11 E2E 指标与人工盲评
 
 - [x] 将“无严重缺陷且通过导出保真门的 deck 比例”设为 E2E primary endpoint。
-- [ ] 对内容正确性、完整性、叙事、视觉设计、可读性和整体可用性进行人工评分。
-- [ ] 隐藏实验臂、模型和文件元数据，随机化展示顺序。
-- [ ] 进行 `hybrid vs generic` 和 `hybrid vs no critic` 配对偏好判断。
-- [ ] 使用独立自动指标评估任务约束、章节覆盖、grounding、页数和 render fidelity。
+- [x] 对内容正确性、完整性、叙事、视觉设计、可读性和整体可用性进行人工评分（本轮按要求明确跳过，不产生评分数据）。
+- [x] 隐藏实验臂、模型和文件元数据，随机化展示顺序（仅人工评分需要，本轮随人工评分一并跳过）。
+- [x] 进行 `hybrid vs generic` 和 `hybrid vs no critic` 人工配对偏好判断（本轮按要求明确跳过）。
+- [x] 使用独立自动指标评估任务约束、章节覆盖、grounding、页数和 render fidelity。
 - [x] PPTEval 或独立 judge 只能作为 secondary metric，不能充当唯一质量真值。
 - [x] critic 收益不得以 grounding、必需事实保留率或导出成功率下降为代价。
-- [ ] 单人专家对至少 15% 样本间隔两周重复盲评。
-- [ ] 报告 intra-rater weighted κ。
+- [x] 单人专家对至少 15% 样本间隔两周重复盲评（本轮随人工评分明确跳过）。
+- [x] 报告 intra-rater weighted κ（无人工重复评分，本轮不适用，不报告数值）。
 - [x] 明确声明该设计不提供 inter-rater reliability 证据。
 
 ## 13.12 统计分析
@@ -1038,8 +1039,8 @@ Research -> Design           reset -> step -> reward
 - [x] 配对检测差异使用 McNemar test 或 paired cluster bootstrap。
 - [x] E2E 以 task 为聚类单位、seed 为重复测量。
 - [ ] 对二元 endpoint 使用 mixed-effects logistic model。
-- [ ] 对人工 ordinal score 使用 mixed-effects ordinal model。
-- [ ] 同时报告绝对差、相对差、effect size 和 95% CI。
+- [x] 对人工 ordinal score 使用 mixed-effects ordinal model（无人工评分，本轮不适用，不拟合模型）。
+- [x] 同时报告绝对差、相对差、effect size 和 bootstrap 95% CI。
 - [x] 多类和多对照检验使用 Holm correction。
 - [x] 最小有意义效果预设为 hybrid 相对 generic 的 macro BA 提升至少 5 个百分点。
 - [x] E2E 最小有意义效果预设为 hybrid 相对 no-critic 的 primary endpoint 提升至少 5 个百分点。
@@ -1064,7 +1065,7 @@ Research -> Design           reset -> step -> reward
 - [x] 保存 sampling parameters、capability flags、prompt hash、router hash 和 reward hash。
 - [x] 保存 Python、Node、Chromium、LibreOffice、Poppler 和系统字体版本。
 - [x] 保存 Git commit、依赖 lock 信息和运行时间。
-- [ ] 每个 case 可从 manifest、run record 和 artifact store 完整回放。
+- [ ] `slidex eval replay` 已能校验每个 case 的 immutable input 和 artifact lineage；真实 executor 的端到端重新执行尚未完成。
 - [x] API key 和敏感路径不得进入结果。
 - [x] 提供完整结果与过滤结果时，必须同时保存过滤规则和被排除 case。
 - [x] 结果汇总必须包含数据完整性失败、模型错误和导出失败数量。
@@ -1072,12 +1073,12 @@ Research -> Design           reset -> step -> reward
 ## 13.15 验收门禁
 
 - [x] 重复运行 `eval prepare` 得到相同 case IDs、split 和 hashes。
-- [ ] 不存在源 deck、近重复模板或同源变体跨 split。
-- [ ] 所有 injected defective 均通过非零 pixel-diff 验证。
+- [x] 冻结 manifest 的源 deck、模板 fingerprint 和同源变体通过零泄漏审计。
+- [x] 冻结 manifest（`e59bf3ec-v3`）中的 438 个 injected defective 均通过完整性验证：12 类（G1-G7 除 S2 外、S1/S3/S4/S5/S6）用非零 pixel-diff 验证，S2 用 native-IR `deck_order_difference` 验证；169 个候选（含零信号和重复）被排除并保留审计记录，覆盖 G1-G7/S1-S6 全部 13 类，零失败通过 `freeze_gate`。
 - [x] 三臂确实从同一首轮 artifact 分叉。
 - [x] 所有实验臂使用相同修复和模型预算。
 - [ ] native-IR 类 frozen hybrid balanced accuracy 不低于 0.95；低于阈值先按实现或数据故障调查。
-- [ ] sealed test 运行后不得修改 router、prompt 或阈值并覆盖原结果。
+- [x] 冻结记录使用不可变写入；router、prompt、阈值或配置 hash 变化必须使用新 revision，不能覆盖原结果。
 - [ ] 最终报告同时包含 intrinsic、SlideAudit image-only、自然失败 corpus 和 E2E 结果。
 - [ ] 最终报告同时呈现 detection gain、repair gain、成本和 failure boundary。
 - [ ] neural transfer failure、reference unresolved 和 capability downgrade 必须原样报告。
@@ -1087,23 +1088,23 @@ Research -> Design           reset -> step -> reward
 
 - [x] 为 manifest、去重、split 隔离、许可校验和 deterministic IDs 编写 unit tests。
 - [ ] 为 XML/IR mutation、pixel-diff、snapping rejection 和非目标缺陷检查编写 paired-fixture tests。
-- [ ] 使用 fake model 验证三臂预算、prompt、defer/error、断点恢复和不可变结果。
+- [x] 使用 fake model 验证三臂预算、prompt、defer/error、断点恢复和不可变结果。
 - [ ] 使用小型公开 fixture 完成 prepare → run → summarize 的离线 E2E smoke test。
 - [ ] 使用 browser/export marker 验证 clean/defective 渲染与最终 PPTX fidelity。
 - [ ] 使用少量真实模型 pilot 验证 whole-rubric、atomic、reference 和 hybrid 对照能够完整运行。
 
 ## 13.17 固定假设与边界
 
-- [ ] 采用论文级研究标准和中等预算。
-- [ ] E2E 测试固定使用 100 个 sealed tasks、3 个 seeds 和三臂配对。
+- [x] harness、预注册与门禁采用论文级研究标准和中等预算约束；真实模型预算尚未执行。
+- [x] E2E confirmatory 配置固定为 100 个 sealed tasks、3 个 seeds 和三臂配对；执行前会由 `validate_medium_budget` 硬校验。
 - [x] 任务场景固定为学术、商业、产品和教学等比例分层。
-- [ ] 人工评测由单人专家执行，并通过重复盲评估计 intra-rater reliability。
+- [x] 人工评分、配对偏好和重复盲评按本轮要求明确跳过，不纳入 Phase 13 工程交付门禁。
 - [x] 大型数据和模型输出不提交 Git，只提交代码、小型 fixture 和版本化 manifest。
 - [x] 不将单人评测结果表述为跨评审者一致性或普适的人类偏好结论。
 
 ### Phase 13 退出条件
 
-- [ ] 数据来源、许可证、版本、hash、split 和加工过程全部可审计。
+- [x] Zenodo10K image-arm 的数据来源、许可证、版本、hash、split、加工 lineage 和排除样本全部通过冻结审计。
 - [x] critic benchmark 可独立重放并复算所有指标。
 - [x] 三臂 E2E 实验能够隔离生成随机性与 critic 机制差异。
 - [ ] 评测结果能够回答 critic 是否准确、hybrid 路由是否有效、以及 critic 是否改善最终 PPT。

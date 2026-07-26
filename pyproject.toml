@@ -88,6 +88,8 @@ dependencies = [
     "typer>=0.9.0",
     "uvicorn",
     "modelscope>=1.35.1",
+    "pyarrow>=18.0.0",
+    "huggingface-hub>=0.36,<2",
 ]
 
 [project.optional-dependencies]

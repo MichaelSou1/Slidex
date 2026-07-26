@@ -10,8 +10,13 @@ from .models import Preregistration
 
 
 def freeze_preregistration(
-    path: Path, config_hashes: dict[str, str]
+    path: Path, config_hashes: dict[str, str], frozen_at: datetime | None = None
 ) -> Preregistration:
+    if path.exists():
+        existing = Preregistration.model_validate_json(path.read_text(encoding="utf-8"))
+        if existing.frozen_config_hashes == config_hashes:
+            return existing
+        raise FileExistsError(f"frozen preregistration already exists: {path}")
     registration = Preregistration(
         research_questions=[
             "Does the critic detect presentation defects accurately?",
@@ -37,7 +42,7 @@ def freeze_preregistration(
         frozen_config_hashes=config_hashes,
         git_commit=git_commit(),
         environment=capture_environment(),
-        frozen_at=datetime.now(UTC),
+        frozen_at=frozen_at or datetime.now(UTC),
     )
     registration.preregistration_hash = content_hash(
         registration.model_dump(exclude={"preregistration_hash"}, mode="json")

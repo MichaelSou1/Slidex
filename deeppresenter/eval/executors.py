@@ -34,6 +34,7 @@ _PROMPTS = {
     Arm.C0_PLUS: "Inspect this slide using the complete rubric, paying special attention to {defect}.",
     Arm.ATOMIC: "Decide only whether defect {defect} exists. Cite visible evidence and localize it.",
     Arm.VLM_ONLY: "Decide only whether defect {defect} exists from rendered pixels. Cite and localize evidence.",
+    Arm.FROZEN_HYBRID: "Inspect only defect {defect} using the frozen symbolic-neural-reference route and cite the selected evidence.",
     Arm.REFERENCE_DISABLED: "Decide only whether defect {defect} exists without a clean reference.",
     Arm.MISMATCHED_ROUTER: "Inspect {defect} using deliberately mismatched evidence as a negative control.",
 }
@@ -52,7 +53,11 @@ async def run_intrinsic_case(
     prompt = _PROMPTS.get(run.arm, "symbolic frozen predicates").format(defect=defect)
     repeats = 10 if run.arm is Arm.C0_X10 else 1
     observations = [
-        await call(case, prompt, "BA" if index % 2 == 0 else "AB")
+        await call(
+            case,
+            prompt,
+            ("BA" if (int(case.case_id[:8], 16) + index) % 2 else "AB"),
+        )
         for index in range(repeats)
     ]
     terminal = [

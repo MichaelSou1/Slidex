@@ -174,6 +174,7 @@ def prepare_manifest(spec_path: Path, output_path: Path) -> BenchmarkManifest:
                 content_sha256=item["content_sha256"],
                 template_fingerprint=item.get("template_fingerprint"),
                 integrity_status=item.get("integrity_status", "valid"),
+                preparation_record=item.get("preparation_record"),
                 metadata=item.get("metadata", {}),
             )
         )
@@ -186,6 +187,7 @@ def prepare_manifest(spec_path: Path, output_path: Path) -> BenchmarkManifest:
         cases=sorted(cases, key=lambda case: case.case_id),
         taxonomy_version=spec.get("taxonomy_version", "1.0"),
         crosswalk=spec.get("crosswalk", {}),
+        crosswalk_entries=spec.get("crosswalk_entries", []),
         preparation=spec.get("preparation", {}),
     )
     manifest.manifest_hash = content_hash(

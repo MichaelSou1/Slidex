@@ -300,3 +300,24 @@ async def test_unknown_model_response_is_explicit() -> None:
         server.responses.append((400, body, "application/json", 0))
         with pytest.raises(ValueError, match="400|unknown model"):
             await model(server).run("hi", retry_times=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_endpoint_rate_limit_runs_before_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with FakeServer() as server:
+        server.reply({"role": "assistant", "content": "ok"})
+        client = model(server, requests_per_minute=20)
+        endpoint = client._endpoints[0]
+        called = 0
+
+        async def no_wait() -> None:
+            nonlocal called
+            called += 1
+
+        monkeypatch.setattr(endpoint, "_wait_for_rate_limit", no_wait)
+        response = await client.run("ping", retry_times=1)
+        assert response.choices[0].message.content == "ok"
+        assert called == 1
