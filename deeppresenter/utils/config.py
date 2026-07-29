@@ -11,7 +11,7 @@ import json_repair
 import yaml
 from dotenv import load_dotenv
 from filelock import FileLock
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 from openai.types.chat import ChatCompletion
 from openai.types.images_response import ImagesResponse
 from pydantic import (
@@ -28,6 +28,7 @@ from deeppresenter.utils.constants import (
     MCP_CALL_TIMEOUT,
     PACKAGE_DIR,
     PIXEL_MULTIPLE,
+    RATE_LIMIT_RETRY_TIMES,
     RETRY_TIMES,
 )
 from deeppresenter.utils.log import debug, logging_openai_exceptions
@@ -424,63 +425,91 @@ class LLM(BaseModel):
         async with self._semaphore:
             for attempt in range(1, retry_times + 1):
                 endpoint = next(iter_endpoints)
-                try:
-                    started_at = time.perf_counter()
-                    response = await endpoint.call(
-                        messages,
-                        self.soft_response_parsing,
-                        response_format,
-                        tools,
-                        tool_choice,
-                    )
-                    payload = response.model_dump_json(exclude_none=True)
-                    self._last_call = {
-                        "endpoint_identifier": self.identifier
-                        or endpoint.base_url
-                        or "openai-default",
-                        "provider": endpoint.provider,
-                        "model": endpoint.model,
-                        "sampling_parameters": dict(endpoint.sampling_parameters),
-                        "usage": response.usage.model_dump(mode="json")
-                        if response.usage
-                        else {},
-                        "estimated_cost": _estimated_cost(response),
-                        "latency_ms": (time.perf_counter() - started_at) * 1000,
-                        "finish_reasons": [
-                            choice.finish_reason for choice in response.choices
-                        ],
-                        "reasoning": [
-                            getattr(choice.message, "reasoning", None)
-                            for choice in response.choices
-                        ],
-                        "tool_calls": [
-                            [
-                                call.model_dump(mode="json")
-                                for call in (choice.message.tool_calls or [])
-                            ]
-                            for choice in response.choices
-                        ],
-                        "response_hash": hashlib.sha256(payload.encode()).hexdigest(),
-                        "attempt": attempt,
-                    }
-                    debug(
-                        "model_call endpoint=%s model=%s prompt_tokens=%s "
-                        "completion_tokens=%s estimated_cost=%s latency_ms=%.3f",
-                        self._last_call["endpoint_identifier"],
-                        endpoint.model,
-                        self._last_call["usage"].get("prompt_tokens", 0),
-                        self._last_call["usage"].get("completion_tokens", 0),
-                        self._last_call["estimated_cost"],
-                        self._last_call["latency_ms"],
-                    )
-                    return response
-                except (ModelCapabilityError, ValidationError):
-                    raise
-                except Exception as exc:
-                    errors.append(f"[{endpoint.model}] {type(exc).__name__}: {exc}")
-                    logging_openai_exceptions(
-                        endpoint if self.secret_logging else endpoint.model, exc
-                    )
+                # Rate limits are a transient infra condition, not a signal
+                # about model output quality, so they get their own bounded
+                # retry budget here instead of consuming the caller-specified
+                # retry_times. This keeps retry_times=1 deterministic for
+                # protocols (critic/inspector) that rely on a true single-shot
+                # semantic while still surviving RPM contention under
+                # concurrent load.
+                for rate_limit_attempt in range(1, RATE_LIMIT_RETRY_TIMES + 1):
+                    try:
+                        started_at = time.perf_counter()
+                        response = await endpoint.call(
+                            messages,
+                            self.soft_response_parsing,
+                            response_format,
+                            tools,
+                            tool_choice,
+                        )
+                        payload = response.model_dump_json(exclude_none=True)
+                        self._last_call = {
+                            "endpoint_identifier": self.identifier
+                            or endpoint.base_url
+                            or "openai-default",
+                            "provider": endpoint.provider,
+                            "model": endpoint.model,
+                            "sampling_parameters": dict(endpoint.sampling_parameters),
+                            "usage": response.usage.model_dump(mode="json")
+                            if response.usage
+                            else {},
+                            "estimated_cost": _estimated_cost(response),
+                            "latency_ms": (time.perf_counter() - started_at) * 1000,
+                            "finish_reasons": [
+                                choice.finish_reason for choice in response.choices
+                            ],
+                            "reasoning": [
+                                getattr(choice.message, "reasoning", None)
+                                for choice in response.choices
+                            ],
+                            "tool_calls": [
+                                [
+                                    call.model_dump(mode="json")
+                                    for call in (choice.message.tool_calls or [])
+                                ]
+                                for choice in response.choices
+                            ],
+                            "response_hash": hashlib.sha256(
+                                payload.encode()
+                            ).hexdigest(),
+                            "attempt": attempt,
+                        }
+                        debug(
+                            "model_call endpoint=%s model=%s prompt_tokens=%s "
+                            "completion_tokens=%s estimated_cost=%s latency_ms=%.3f",
+                            self._last_call["endpoint_identifier"],
+                            endpoint.model,
+                            self._last_call["usage"].get("prompt_tokens", 0),
+                            self._last_call["usage"].get("completion_tokens", 0),
+                            self._last_call["estimated_cost"],
+                            self._last_call["latency_ms"],
+                        )
+                        return response
+                    except (ModelCapabilityError, ValidationError):
+                        raise
+                    except RateLimitError as exc:
+                        errors.append(f"[{endpoint.model}] {type(exc).__name__}: {exc}")
+                        logging_openai_exceptions(
+                            endpoint if self.secret_logging else endpoint.model, exc
+                        )
+                        if rate_limit_attempt < RATE_LIMIT_RETRY_TIMES:
+                            delay = min(5.0 * (2 ** (rate_limit_attempt - 1)), 30.0)
+                            await asyncio.sleep(delay)
+                            continue
+                        # Rate-limit budget exhausted for this attempt; fall
+                        # through to the outer retry_times loop below so a
+                        # non-429 style attempt count is still consumed.
+                    except Exception as exc:
+                        errors.append(f"[{endpoint.model}] {type(exc).__name__}: {exc}")
+                        logging_openai_exceptions(
+                            endpoint if self.secret_logging else endpoint.model, exc
+                        )
+                        break
+                if attempt < retry_times:
+                    # Back off before the next retry so other transient
+                    # errors get a chance to clear instead of hammering the
+                    # endpoint with an immediate, tight retry loop.
+                    await asyncio.sleep(min(1.0 * (2 ** (attempt - 1)), 30.0))
         raise ValueError(f"All models failed after {retry_times} retries:\n{errors}")
 
     async def generate_image(
@@ -538,7 +567,18 @@ class SlidexConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     taxonomy_version: str = "1.0"
+    authoring_skill_version: str = "1.0"
     enforce_model_role_policy: bool = False
+    # Self-declared frozen snapshot for the current experiment revision. When
+    # `enforce_model_role_policy` is on, `design_agent`/`judge_model` must match
+    # these fields exactly. Switching models between revisions only requires
+    # updating these fields (and the corresponding endpoint config) together;
+    # no model name is ever hardcoded in Python.
+    frozen_generation_model: str | None = None
+    frozen_generation_base_url: str | None = None
+    frozen_generation_requests_per_minute: int | None = None
+    frozen_judge_model: str | None = None
+    frozen_judge_base_url: str | None = None
     router_version: str = "1.0"
     reward_version: str = "1.0"
     reward_terminal_hard_negative: float = Field(default=-1, ge=-1, le=0)
@@ -554,7 +594,16 @@ class SlidexConfig(BaseModel):
     color_delta_e_threshold: float = Field(default=5, ge=0)
     typography_tolerance_px: float = Field(default=1, ge=0)
     max_repair_rounds: int = Field(default=3, ge=0)
-    max_episode_steps: int = Field(default=20, gt=0)
+    max_episode_steps: int = Field(default=40, gt=0)
+    max_turns_per_slide: int = Field(
+        default=6,
+        gt=0,
+        description=(
+            "Cap on consecutive Design agent turns spent editing/inspecting the "
+            "same slide file before it is forced to move on, so one hard slide "
+            "cannot exhaust the shared max_episode_steps budget."
+        ),
+    )
     command_timeout_seconds: int = Field(default=300, gt=0)
     strict_export: bool = True
     pptx_rerender: bool = True
@@ -651,25 +700,51 @@ class DeepPresenterConfig(BaseModel):
         )
         if not enforce_policy:
             return value
+        # Self-consistency check only: the expected model/base_url/rpm come
+        # from the config's own frozen-snapshot fields, never from a
+        # hardcoded model name in Python. Switching models between
+        # experiment revisions means updating the endpoint config and its
+        # matching `frozen_*` fields together; no code change is required.
         design = value.get("design_agent")
         if not isinstance(design, dict):
             raise ValueError("PPT generation policy requires design_agent")
-        if design.get("model") != "gemini-3.6-flash" or not str(
-            design.get("base_url", "")
-        ).startswith("https://aigc.sankuai.com/v1/openai/native"):
-            raise ValueError("PPT generation policy requires Friday gemini-3.6-flash")
-        if design.get("requests_per_minute") != 20:
+        frozen_model = slidex.get("frozen_generation_model")
+        frozen_base_url = slidex.get("frozen_generation_base_url")
+        frozen_rpm = slidex.get("frozen_generation_requests_per_minute")
+        if not frozen_model or not frozen_base_url or frozen_rpm is None:
             raise ValueError(
-                "Friday generation policy requires requests_per_minute=20"
+                "enforce_model_role_policy requires slidex.frozen_generation_model, "
+                "frozen_generation_base_url and frozen_generation_requests_per_minute "
+                "to declare the frozen generation snapshot"
+            )
+        if design.get("model") != frozen_model or not str(
+            design.get("base_url", "")
+        ).startswith(str(frozen_base_url)):
+            raise ValueError(
+                "design_agent drifted from the frozen generation snapshot "
+                f"(expected model={frozen_model!r}, base_url startswith {frozen_base_url!r})"
+            )
+        if design.get("requests_per_minute") != frozen_rpm:
+            raise ValueError(
+                "design_agent.requests_per_minute drifted from the frozen "
+                f"generation snapshot (expected {frozen_rpm!r})"
             )
         judge = value.get("judge_model")
         if not isinstance(judge, dict):
             raise ValueError("Judge policy requires judge_model")
-        if judge.get("model") != "doubao-seed-2-1-turbo-260628" or not str(
-            judge.get("base_url", "")
-        ).startswith("https://ark.cn-beijing.volces.com/api/v3"):
+        frozen_judge_model = slidex.get("frozen_judge_model")
+        frozen_judge_base_url = slidex.get("frozen_judge_base_url")
+        if not frozen_judge_model or not frozen_judge_base_url:
             raise ValueError(
-                "Judge policy requires Ark doubao-seed-2-1-turbo-260628"
+                "enforce_model_role_policy requires slidex.frozen_judge_model and "
+                "frozen_judge_base_url to declare the frozen judge snapshot"
+            )
+        if judge.get("model") != frozen_judge_model or not str(
+            judge.get("base_url", "")
+        ).startswith(str(frozen_judge_base_url)):
+            raise ValueError(
+                "judge_model drifted from the frozen judge snapshot "
+                f"(expected model={frozen_judge_model!r}, base_url startswith {frozen_judge_base_url!r})"
             )
         return value
 

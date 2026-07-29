@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import io
 import json
 import mimetypes
 import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
+
+from PIL import Image
 
 from deeppresenter.slidex.models import (
     AtomicVerdict,
@@ -35,6 +38,58 @@ _JSON_INSTRUCTION = "Return only an object matching the supplied JSON schema."
 
 class NeuralCapabilityError(RuntimeError):
     """Raised when a configured provider cannot satisfy required evidence/schema."""
+
+
+# Most gateways reject request bodies above a few MB; some source decks render
+# at unexpectedly high pixel dimensions (e.g. poster-sized aspect ratios at
+# fixed DPI), producing multi-megabyte PNGs that a naive base64 encode would
+# balloon past the gateway limit. This is a transport-layer safeguard only:
+# it never touches the frozen render artifacts on disk, only the bytes sent
+# to the model for this one call.
+_MAX_ENCODED_IMAGE_BYTES = 3_500_000
+
+
+def _encode_image_for_transport(path: str) -> tuple[str, str]:
+    """Return (base64, media_type), downscaling oversized renders before encoding.
+
+    PNG is lossless, so pixel-dimension downscaling alone barely shrinks dense
+    renders (photographic backgrounds, gradients). Once the losslessly encoded
+    render exceeds the transport guard, this falls back to re-encoding as JPEG
+    with progressively lower resolution/quality, which is sufficient for a VLM
+    to still judge geometry/semantic defects. The scale/quality ladder is fixed
+    (not adaptive to content), so repeated calls on the same frozen render are
+    deterministic.
+    """
+    data = Path(path).read_bytes()
+    media_type = mimetypes.guess_type(path)[0] or "image/png"
+    encoded = base64.b64encode(data).decode()
+    if len(encoded) <= _MAX_ENCODED_IMAGE_BYTES:
+        return encoded, media_type
+    image = Image.open(io.BytesIO(data))
+    image.load()
+    if image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+    candidate = encoded
+    for scale, quality in (
+        (1.0, 90),
+        (0.75, 88),
+        (0.5, 85),
+        (0.35, 82),
+        (0.25, 80),
+        (0.18, 78),
+        (0.12, 75),
+    ):
+        width = max(1, int(image.width * scale))
+        height = max(1, int(image.height * scale))
+        resized = image if scale == 1.0 else image.resize((width, height), Image.LANCZOS)
+        buffer = io.BytesIO()
+        resized.save(buffer, format="JPEG", quality=quality, optimize=True)
+        candidate = base64.b64encode(buffer.getvalue()).decode()
+        if len(candidate) <= _MAX_ENCODED_IMAGE_BYTES:
+            return candidate, "image/jpeg"
+    # Last resort: return the smallest attempt even if still above the guard;
+    # the transport error (if any) will surface as a normal ERROR outcome.
+    return candidate, "image/jpeg"
 
 
 class AtomicNeuralClient:
@@ -140,6 +195,12 @@ class AtomicNeuralClient:
         self.records.append(record)
         return verdict, record
 
+    def build_content(
+        self, prompt: str, image_paths: Sequence[str]
+    ) -> str | list[dict[str, Any]]:
+        """Public wrapper so other critics can reuse this client's multimodal encoding."""
+        return self._content(prompt, image_paths)
+
     def _content(
         self, prompt: str, image_paths: Sequence[str]
     ) -> str | list[dict[str, Any]]:
@@ -149,9 +210,7 @@ class AtomicNeuralClient:
             raise NeuralCapabilityError("provider does not support image input")
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for path in image_paths:
-            data = Path(path).read_bytes()
-            media_type = mimetypes.guess_type(path)[0] or "image/png"
-            encoded = base64.b64encode(data).decode()
+            encoded, media_type = _encode_image_for_transport(path)
             content.append(
                 {
                     "type": "image_url",
@@ -468,6 +527,52 @@ class RenderAnomalyInspector(AtomicInspector):
         }, [context.render_path]
 
 
+class RenderOnlyGeometryInspector(AtomicInspector):
+    """Open-world image-only downgrade for symbolic-only defect classes.
+
+    Geometry/style defects (G1-G6) and deck-level semantics (S2, S3, S5)
+    normally require computed_ir or native XML that image-only artifacts do
+    not carry. Rather than defer unconditionally, this issues one atomic VLM
+    query against the rendered pixels so an image-only pipeline still yields
+    a verdict, at the coarser precision the frozen router already discloses
+    via capability_limit.
+    """
+
+    name = "render-only-geometry"
+
+    def __init__(self, client: AtomicNeuralClient, defect_class: DefectClass, definition: str) -> None:
+        super().__init__(client)
+        self.defect_class = defect_class
+        self.definition = definition
+
+    @property
+    def evidence_source(self) -> EvidenceSource:
+        return EvidenceSource.RENDER
+
+    def prepare(
+        self, context: InspectionContext
+    ) -> tuple[dict[str, Any], list[str]] | InspectionResult:
+        if not context.render_path:
+            return self._defer(context.artifact, "render_required")
+        return (
+            {"note": "Image-only artifact; judge from rendered pixels alone."},
+            [context.render_path],
+        )
+
+
+_RENDER_ONLY_DEFINITIONS: dict[DefectClass, str] = {
+    DefectClass.G1: "text or content that overflows, is clipped by, or does not fit within its visible container",
+    DefectClass.G2: "two or more elements that visibly overlap each other in a way that obscures content",
+    DefectClass.G3: "elements that are visibly misaligned relative to other elements sharing the same row or column",
+    DefectClass.G4: "text rendered at a visibly inconsistent or clashing font size relative to sibling text",
+    DefectClass.G5: "a color that is visibly off-palette or clashes with the slide's established color scheme",
+    DefectClass.G6: "content that visibly crosses or sits flush against the slide's safe margin/edge",
+    DefectClass.S2: "an ordered sequence of slides whose visible narrative order contains a clear break",
+    DefectClass.S3: "inconsistent terminology or labeling for what is visibly the same concept across slides",
+    DefectClass.S5: "a visibly missing step or section that the slide's own structure implies should be present",
+}
+
+
 class DeckSemanticInspector(AtomicInspector):
     name = "deck-semantic"
 
@@ -481,9 +586,24 @@ class DeckSemanticInspector(AtomicInspector):
         super().__init__(client)
         self.defect_class = defect_class
         self.definition = (
-            "Fail only when the ordered slide titles/summaries contain a clear narrative-order break."
+            "Fail only when the ordered slide titles/summaries contain a clear, high-confidence "
+            "narrative-order break (not merely a terse or minimal transition). When uncertain, "
+            "prefer pass or defer over fail."
             if defect_class == DefectClass.S2
-            else "Fail only when a required step from the task or approved outline is absent."
+            else (
+                "Fail only when a required step explicitly implied by the task description is "
+                "absent from the slides. If no 'approved_outline' key is present in evidence, "
+                "no fixed structure was approved for this deck: judge solely against the task "
+                "description's own implied steps, and the absence of that key is not itself "
+                "evidence of a missing step. This check is about missing content only: extra "
+                "slides beyond what the task lists (e.g. an added intro or conclusion slide) "
+                "are never a failure on their own and must not be flagged or recommended for "
+                "removal; only report a fail when a required step is truly absent. A slide "
+                "count that already satisfies any page-count range stated in the task is never "
+                "itself evidence of missing depth or content -- do not fail on reasoning like "
+                "'N pages may indicate insufficient depth' when N is within the requested range; "
+                "judge only whether a specific, named step or section is absent."
+            )
         )
 
     @property
@@ -512,12 +632,20 @@ class DeckSemanticInspector(AtomicInspector):
                 inspector_name=self.name,
                 inspector_version=self.version,
             )
-        return {
-            "outline": context.deck_outline,
-            "slide_summaries": context.slide_summaries,
-            "approved_outline": context.approved_outline,
-            "task": context.task,
-        }, []
+        # Omit outline/approved_outline keys entirely when empty rather than
+        # sending an empty-list literal: an empty-list value in the evidence
+        # JSON reads to the model as an observed "structure is missing" signal
+        # and biases S5 toward a false fail on every deck (no E2E caller sets
+        # a planner-approved outline today, so this previously fired on 100%
+        # of decks). Presence/absence of the key is the intended signal now.
+        evidence: dict[str, Any] = {"slide_summaries": context.slide_summaries}
+        if context.deck_outline:
+            evidence["outline"] = context.deck_outline
+        if context.approved_outline:
+            evidence["approved_outline"] = context.approved_outline
+        if context.task:
+            evidence["task"] = context.task
+        return evidence, []
 
 
 def _flatten(elements: Sequence[SlideElement | ComputedSlideElement]) -> list[Any]:

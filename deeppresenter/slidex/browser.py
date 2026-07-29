@@ -367,6 +367,13 @@ class BrowserObserver:
             await page.goto(
                 Path(html_path).resolve().as_uri(), wait_until="networkidle"
             )
+            # Match html2pptx.js: force border-box sizing so bbox extraction here
+            # agrees with the overflow validation used for the real PPTX export
+            # (a body with fixed width/height plus its own padding/margin would
+            # otherwise silently grow under the default content-box model).
+            await page.add_style_tag(
+                content="*, *::before, *::after { box-sizing: border-box !important; }"
+            )
             await page.evaluate(
                 "document.fonts ? document.fonts.ready : Promise.resolve()"
             )

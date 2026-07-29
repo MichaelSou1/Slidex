@@ -118,6 +118,107 @@ def weighted_kappa(first: list[int], second: list[int]) -> float:
     return 1 - _safe(observed, expected) if expected else 1.0
 
 
+def mixed_effects_logistic(
+    outcomes: list[bool],
+    treatment: list[bool],
+    clusters: list[str],
+    *,
+    max_iter: int = 100,
+    tol: float = 1e-6,
+) -> dict[str, float]:
+    """Random-intercept logistic mixed model fit by penalized quasi-likelihood.
+
+    This estimates a fixed treatment effect on a binary endpoint while
+    accounting for source-deck-level clustering via a per-cluster random
+    intercept ``u_j ~ N(0, sigma^2)``, avoiding the pseudo-replication that a
+    plain logistic regression would introduce when multiple cases share one
+    source deck. Implemented without a statistics dependency: Laplace-style
+    penalized IRLS alternates fixed-effect and random-intercept updates, then
+    refits the random-intercept variance from the shrunken residuals.
+    """
+    if not (len(outcomes) == len(treatment) == len(clusters)):
+        raise ValueError("outcomes, treatment, and clusters must be aligned")
+    if not outcomes:
+        raise ValueError("mixed-effects fit requires at least one observation")
+    unique_clusters = sorted(set(clusters))
+    cluster_index = {name: index for index, name in enumerate(unique_clusters)}
+    n_clusters = len(unique_clusters)
+    y = [float(value) for value in outcomes]
+    x = [float(value) for value in treatment]
+    z = [cluster_index[name] for name in clusters]
+
+    beta0, beta1 = 0.0, 0.0
+    random_intercepts = [0.0] * n_clusters
+    sigma2 = 1.0
+
+    def linear_predictor(index: int) -> float:
+        return beta0 + beta1 * x[index] + random_intercepts[z[index]]
+
+    for _ in range(max_iter):
+        previous = (beta0, beta1, sigma2)
+        # Fixed-effects + random-intercept Newton step (penalized IRLS).
+        for _inner in range(25):
+            grad_b0 = grad_b1 = 0.0
+            hess_b0b0 = hess_b0b1 = hess_b1b1 = 0.0
+            grad_u = [0.0] * n_clusters
+            hess_u = [1.0 / sigma2 if sigma2 > 0 else 1e6] * n_clusters
+            for index in range(len(y)):
+                eta = linear_predictor(index)
+                mu = 1.0 / (1.0 + pow(2.718281828459045, -eta))
+                weight = max(mu * (1 - mu), 1e-6)
+                residual = y[index] - mu
+                grad_b0 += residual
+                grad_b1 += residual * x[index]
+                hess_b0b0 += weight
+                hess_b0b1 += weight * x[index]
+                hess_b1b1 += weight * x[index] * x[index]
+                cluster = z[index]
+                grad_u[cluster] += residual
+                hess_u[cluster] += weight
+            grad_u = [
+                grad_u[j] - (random_intercepts[j] / sigma2 if sigma2 > 0 else 0)
+                for j in range(n_clusters)
+            ]
+            determinant = hess_b0b0 * hess_b1b1 - hess_b0b1 * hess_b0b1
+            if abs(determinant) < 1e-12:
+                break
+            delta_b0 = (grad_b0 * hess_b1b1 - grad_b1 * hess_b0b1) / determinant
+            delta_b1 = (grad_b1 * hess_b0b0 - grad_b0 * hess_b0b1) / determinant
+            beta0 += delta_b0
+            beta1 += delta_b1
+            for j in range(n_clusters):
+                random_intercepts[j] += grad_u[j] / hess_u[j]
+            if abs(delta_b0) < tol and abs(delta_b1) < tol:
+                break
+        # Update the random-intercept variance including each cluster's posterior
+        # curvature (1/hess_u), matching the standard PQL variance-component update;
+        # using only sum(u_j^2) would systematically shrink sigma2 toward zero.
+        sigma2 = max(
+            1e-6,
+            sum(
+                random_intercepts[j] * random_intercepts[j] + 1.0 / hess_u[j]
+                for j in range(n_clusters)
+            )
+            / max(1, n_clusters),
+        )
+        if (
+            abs(beta0 - previous[0]) < tol
+            and abs(beta1 - previous[1]) < tol
+            and abs(sigma2 - previous[2]) < tol
+        ):
+            break
+
+    odds_ratio = pow(2.718281828459045, beta1)
+    return {
+        "fixed_intercept": beta0,
+        "treatment_log_odds": beta1,
+        "treatment_odds_ratio": odds_ratio,
+        "random_intercept_variance": sigma2,
+        "n_clusters": float(n_clusters),
+        "n_observations": float(len(y)),
+    }
+
+
 def paired_effect(
     control: list[bool], treatment: list[bool], *, seed: int = 0, samples: int = 2000
 ) -> dict[str, float | list[float]]:
@@ -174,26 +275,72 @@ def repair_metrics(results: Iterable[CaseResult]) -> dict[str, float]:
     }
 
 
+def _defer_reason(result: CaseResult) -> str:
+    """Best-effort human-readable defer/error reason for as-is reporting.
+
+    ``raw_output`` shapes differ across arms (frozen-router reports, atomic
+    verdict dicts, plain error strings), so this walks the common places a
+    reason lives rather than assuming one fixed schema; unknown shapes fall
+    back to "unspecified" instead of raising, since this is a reporting path
+    that must never mask the original defer as a crash.
+    """
+    if result.error:
+        return result.error
+    raw = result.raw_output
+    reports = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        for inspection in report.get("results", []) or []:
+            if not isinstance(inspection, dict) or inspection.get("status") != "defer":
+                continue
+            for evidence in inspection.get("evidence", []) or []:
+                detail = evidence.get("detail") if isinstance(evidence, dict) else None
+                if detail:
+                    return detail
+        if report.get("reason"):
+            return str(report["reason"])
+    return "unspecified"
+
+
 def summarize(
     cases: Iterable[EvaluationCase], results: Iterable[CaseResult]
 ) -> dict[str, object]:
     case_map = {case.case_id: case for case in cases}
     records = list(results)
     by_class: dict[str, dict[str, list[bool]]] = defaultdict(
-        lambda: {"truth": [], "prediction": []}
+        lambda: {"truth": [], "prediction": [], "cluster": []}
     )
+    # Open-world negative cases (e.g. SlideAudit true negatives) carry an
+    # empty ``labels`` list: they are a true negative against *every*
+    # candidate defect class the corpus inspects, not against none. Restrict
+    # that candidate pool to classes this corpus actually predicted anywhere,
+    # not the full taxonomy, so an unlabeled case never falsely contributes a
+    # true negative to a defect class this arm/corpus never inspects.
+    candidate_classes = {
+        label.defect_class for result in records for label in case_map[result.case_id].labels
+    } | {defect for result in records for defect in result.predicted_defects}
     for result in records:
         case = case_map[result.case_id]
         truth_classes = {label.defect_class for label in case.labels if label.defective}
         labeled_classes = {label.defect_class for label in case.labels}
-        classes = labeled_classes | set(result.predicted_defects)
+        classes = labeled_classes | set(result.predicted_defects) if labeled_classes else candidate_classes
         for defect in classes:
             by_class[defect]["truth"].append(defect in truth_classes)
             by_class[defect]["prediction"].append(defect in result.predicted_defects)
+            by_class[defect]["cluster"].append(case.parent_deck_id)
     per_class = {
         key: binary_metrics(value["truth"], value["prediction"])
         for key, value in sorted(by_class.items())
     }
+    for key, value in by_class.items():
+        if len(set(value["cluster"])) < 2 or len(set(value["truth"])) < 2:
+            continue
+        fit = mixed_effects_logistic(value["prediction"], value["truth"], value["cluster"])
+        per_class[key]["mixed_effects_truth_log_odds"] = fit["treatment_log_odds"]
+        per_class[key]["mixed_effects_random_intercept_variance"] = fit[
+            "random_intercept_variance"
+        ]
     macro = _safe(
         sum(item["balanced_accuracy"] for item in per_class.values()), len(per_class)
     )
@@ -246,6 +393,13 @@ def summarize(
             ),
         },
         "outcomes": dict(Counter(r.outcome.value for r in records)),
+        # Capability downgrades (e.g. image-only SlideAudit cases with no
+        # native-IR guarantees) must be reported as-is rather than silently
+        # folded into pass/fail, per the 13.15 acceptance gate.
+        "capability_downgrades": dict(
+            Counter(r.capability_downgrade for r in records if r.capability_downgrade)
+        ),
+        "defer_reasons": dict(Counter(_defer_reason(r) for r in records if r.outcome == Outcome.DEFER)),
         "integrity_failures": sum(
             case.integrity_status != "valid" for case in case_map.values()
         ),

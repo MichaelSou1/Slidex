@@ -100,11 +100,29 @@ def create_logger(
 
 
 def set_logger(name: str = __name__, log_file: str | Path | None = None):
-    """Set a new logger for the current async context"""
-    logger = _context_logger.get()
-    assert logger is None or logger.name == "default logger", (
-        "Context logger is already set."
-    )
+    """Set a new logger for the current async context.
+
+    Independent top-level execution units (e.g. AgentLoop instances run one
+    after another for different cases in the same asyncio task, as the
+    Phase 13 E2E harness does when it sequentially drives no_critic then
+    generic/hybrid AgentLoops from a single run_paired_task coroutine) are
+    expected to each call this once; ContextVar.set never gets a matching
+    reset, so re-entering here with an already-set non-default logger from a
+    *previous, now-finished* run is normal, not a bug, and must overwrite
+    silently rather than assert. What we still want to catch is truly
+    nested/concurrent misuse within the *same* run (e.g. AgentLoop.__init__
+    called twice without the first one's work completing) -- but that
+    pattern is indistinguishable from the legitimate sequential case using
+    only the previous logger's identity, so this now always allows the
+    overwrite and simply logs a debug breadcrumb when replacing one.
+    """
+    previous = _context_logger.get()
+    if previous is not None and previous.name not in {"default logger", name}:
+        previous.debug(
+            "Replacing context logger %r with %r for a new sequential run",
+            previous.name,
+            name,
+        )
     logger = create_logger(name, log_file)
     logger.debug("Setting new context logger with loglevel=%s", LOGGING_LEVEL)
     _context_logger.set(logger)

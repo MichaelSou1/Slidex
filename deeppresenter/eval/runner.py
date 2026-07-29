@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -74,7 +75,22 @@ class EvaluationRunner:
         final.immutable_hash = content_hash(
             final.model_dump(exclude={"immutable_hash"}, mode="json")
         )
-        write_immutable(run_dir / "result.json", final)
+        result_path = run_dir / "result.json"
+        if rerun_failed and result_path.exists():
+            # Resuming previously-failed cases legitimately changes result.json;
+            # only the per-case records under cases/ need to stay append-only.
+            result_path.write_text(
+                json.dumps(
+                    final.model_dump(mode="json"),
+                    indent=2,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        else:
+            write_immutable(result_path, final)
         return final
 
 
@@ -119,4 +135,48 @@ def replay_case(
         "run_id": result.run.run_id,
         "arm": result.run.arm.value,
         "seed": result.run.seed,
+    }
+
+
+async def replay_case_live(
+    manifest: BenchmarkManifest,
+    result: EvaluationResult,
+    case_id: str,
+    cache_root: Path,
+    executor: CaseExecutor,
+) -> dict[str, object]:
+    """Re-execute one case against a real executor and diff it against the frozen record.
+
+    This extends :func:`replay_case` (which only checks immutable lineage) by
+    actually invoking the same critic executor used for the original run and
+    comparing the newly produced :class:`CaseResult` against the frozen one.
+    Sampling is pinned to temperature 0 in the frozen model configuration, so
+    a genuine implementation/environment mismatch shows up as an outcome or
+    predicted-defect drift rather than as expected sampling noise.
+    """
+    static_report = replay_case(manifest, result, case_id, cache_root)
+    if not static_report["replayable"]:
+        return {**static_report, "live_replay_attempted": False}
+    case = next(item for item in manifest.cases if item.case_id == case_id)
+    frozen_result = next(item for item in result.results if item.case_id == case_id)
+    live_result = await executor(case, result.run)
+    drift: list[str] = []
+    if live_result.outcome != frozen_result.outcome:
+        drift.append(
+            f"outcome mismatch: frozen={frozen_result.outcome.value} "
+            f"live={live_result.outcome.value}"
+        )
+    if set(live_result.predicted_defects) != set(frozen_result.predicted_defects):
+        drift.append(
+            "predicted_defects mismatch: "
+            f"frozen={sorted(frozen_result.predicted_defects)} "
+            f"live={sorted(live_result.predicted_defects)}"
+        )
+    return {
+        **static_report,
+        "live_replay_attempted": True,
+        "live_replay_matches": not drift,
+        "live_replay_drift": drift,
+        "live_outcome": live_result.outcome.value,
+        "frozen_outcome": frozen_result.outcome.value,
     }

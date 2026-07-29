@@ -20,6 +20,7 @@ from deeppresenter.slidex.inspectors.neural import (
     ImageTextContradictionInspector,
     NeuralCapabilityError,
     RenderAnomalyInspector,
+    RenderOnlyGeometryInspector,
     TitleBodyMismatchInspector,
 )
 from deeppresenter.slidex.inspectors.reference import ReferenceInspector
@@ -33,6 +34,7 @@ __all__ = [
     "NeuralCapabilityError",
     "ReferenceInspector",
     "RenderAnomalyInspector",
+    "RenderOnlyGeometryInspector",
     "TitleBodyMismatchInspector",
     "BrandColorInspector",
     "DeclaredOverflowInspector",

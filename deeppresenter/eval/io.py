@@ -67,8 +67,17 @@ def git_commit() -> str:
     return result.stdout.strip() or "unknown"
 
 
-def _version(command: list[str]) -> str:
+def _version(command: list[str], aliases: tuple[str, ...] = ()) -> str:
+    """Return the first line of ``command --version`` output.
+
+    ``aliases`` lets callers probe alternate executable names (for example
+    LibreOffice ships as ``soffice`` on most platforms, not ``libreoffice``).
+    """
     executable = shutil.which(command[0])
+    for alias in aliases:
+        if executable:
+            break
+        executable = shutil.which(alias)
     if not executable:
         return "unavailable"
     result = subprocess.run(
@@ -83,7 +92,7 @@ def capture_environment() -> dict[str, str]:
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "node": _version(["node", "--version"]),
-        "libreoffice": _version(["libreoffice", "--version"]),
+        "libreoffice": _version(["libreoffice", "--version"], aliases=("soffice",)),
         "poppler": _version(["pdftoppm", "-v"]),
         "chromium": os.getenv("PLAYWRIGHT_CHROMIUM_VERSION", "managed-by-playwright"),
         "captured_at": datetime.now(UTC).isoformat(),

@@ -153,9 +153,20 @@ def test_image_only_explicitly_downgrades_capability() -> None:
         EvidenceAvailability.from_context(context),
         ArtifactTrust.IMAGE_ONLY,
     )
-    assert not decision.stages
-    assert decision.missing_evidence == ["trusted_native_ir"]
+    # With a render available, G1-G6/S2/S3/S5 downgrade to one atomic VLM query
+    # instead of deferring unconditionally, but the capability limit is still
+    # disclosed so callers know native-IR guarantees do not apply.
+    assert [stage.inspector for stage in decision.stages] == ["render-only-geometry"]
     assert "Image-only" in (decision.capability_limit or "")
+
+    no_render_context = InspectionContext(artifact=_artifact(trust=ArtifactTrust.IMAGE_ONLY))
+    no_render_decision = FrozenCriticRouter().route(
+        DefectClass.G2,
+        EvidenceAvailability.from_context(no_render_context),
+        ArtifactTrust.IMAGE_ONLY,
+    )
+    assert not no_render_decision.stages
+    assert no_render_decision.missing_evidence == ["trusted_native_ir"]
 
 
 @pytest.mark.unit

@@ -51,22 +51,59 @@ async function getBodyDimensions(page) {
   const bodyDimensions = await page.evaluate(() => {
     const body = document.body;
     const style = window.getComputedStyle(body);
-
+    const bounds = body.getBoundingClientRect();
+    const overflowElements = [...body.querySelectorAll('*')]
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const elementStyle = window.getComputedStyle(element);
+        const overflowX = Math.max(0, rect.right - bounds.right);
+        const overflowY = Math.max(0, rect.bottom - bounds.bottom);
+        return {
+          id: element.getAttribute('data-slidex-id') || null,
+          tag: element.tagName.toLowerCase(),
+          className: typeof element.className === 'string' ? element.className : '',
+          x: Math.round(rect.left - bounds.left), y: Math.round(rect.top - bounds.top),
+          width: Math.round(rect.width), height: Math.round(rect.height),
+          right: Math.round(rect.right - bounds.left), bottom: Math.round(rect.bottom - bounds.top),
+          overflowX: Math.round(overflowX), overflowY: Math.round(overflowY),
+          position: elementStyle.position, marginBottom: elementStyle.marginBottom,
+        };
+      })
+      .filter((item) => item.width > 0 && item.height > 0 && (item.overflowX > 0 || item.overflowY > 0))
+      .sort((left, right) => Math.max(right.overflowX, right.overflowY) - Math.max(left.overflowX, left.overflowY))
+      .slice(0, 8);
+    const flowTail = [...body.children]
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const elementStyle = window.getComputedStyle(element);
+        return {
+          id: element.getAttribute('data-slidex-id') || null,
+          tag: element.tagName.toLowerCase(),
+          className: typeof element.className === 'string' ? element.className : '',
+          x: Math.round(rect.left - bounds.left), y: Math.round(rect.top - bounds.top),
+          width: Math.round(rect.width), height: Math.round(rect.height),
+          right: Math.round(rect.right - bounds.left), bottom: Math.round(rect.bottom - bounds.top),
+          overflowX: Math.max(0, Math.round(rect.right - bounds.right)),
+          overflowY: Math.max(0, Math.round(rect.bottom - bounds.bottom)),
+          position: elementStyle.position, marginBottom: elementStyle.marginBottom,
+        };
+      })
+      .filter((item) => item.width > 0 && item.height > 0)
+      .sort((left, right) => right.bottom - left.bottom)
+      .slice(0, 3);
     return {
-      width: parseFloat(style.width),
-      height: parseFloat(style.height),
-      scrollWidth: body.scrollWidth,
-      scrollHeight: body.scrollHeight
+      width: parseFloat(style.width), height: parseFloat(style.height),
+      scrollWidth: body.scrollWidth, scrollHeight: body.scrollHeight,
+      body: { width: Math.round(bounds.width), height: Math.round(bounds.height), paddingBottom: style.paddingBottom, marginBottom: style.marginBottom, boxSizing: style.boxSizing },
+      overflowElements,
+      flowTail,
     };
   });
-
   const errors = [];
   const widthOverflowPx = Math.max(0, bodyDimensions.scrollWidth - bodyDimensions.width - 1);
   const heightOverflowPx = Math.max(0, bodyDimensions.scrollHeight - bodyDimensions.height - 1);
-
   const widthOverflowPt = widthOverflowPx * PT_PER_PX;
   const heightOverflowPt = heightOverflowPx * PT_PER_PX;
-
   if (widthOverflowPt > 0 || heightOverflowPt > 0) {
     const directions = [];
     if (widthOverflowPt > 0) directions.push(`${widthOverflowPt.toFixed(1)}pt horizontally`);
@@ -74,8 +111,14 @@ async function getBodyDimensions(page) {
     const reminder = heightOverflowPt > 0 ? ' (Remember: leave 0.5" margin at bottom of slide)' : '';
     errors.push(`HTML content overflows body by ${directions.join(' and ')}${reminder}`);
   }
-
   return { ...bodyDimensions, errors };
+}
+
+function overflowAxis(bodyDimensions) {
+  const horizontal = bodyDimensions.scrollWidth > bodyDimensions.width + 1;
+  const vertical = bodyDimensions.scrollHeight > bodyDimensions.height + 1;
+  if (horizontal && vertical) return 'both';
+  return horizontal ? 'horizontal' : 'vertical';
 }
 
 /**
@@ -710,6 +753,18 @@ async function extractSlideData(page) {
     const PT_PER_PX = 0.75;
     const PX_PER_IN = 96;
 
+    // SVG elements expose `className` as an SVGAnimatedString (with baseVal/
+    // animVal), not a plain string, so it has no `.includes` method even though
+    // it is truthy. Any element (or its descendants, e.g. <path>/<text> inside
+    // an <svg>) can hit this when scanned via `document.querySelectorAll('*')`.
+    // Normalize to a string first so className checks never throw on SVG nodes.
+    const safeClassName = (el) => {
+      const value = el && el.className;
+      if (typeof value === 'string') return value;
+      if (value && typeof value.baseVal === 'string') return value.baseVal;
+      return '';
+    };
+
     // Fonts that are single-weight and should not have bold applied
     // (applying bold causes PowerPoint to use faux bold which makes text wider)
     const SINGLE_WEIGHT_FONTS = ['impact'];
@@ -760,8 +815,7 @@ async function extractSlideData(page) {
       if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
       const text = (el.textContent || '').trim();
       if (!text || !BULLET_CHAR_REGEX.test(text[0])) return false;
-      const className = typeof el.className === 'string' ? el.className : '';
-      if (className.includes('bullet')) return true;
+      if (safeClassName(el).includes('bullet')) return true;
       const computed = computedStyle || window.getComputedStyle(el);
       return computed.position === 'absolute';
     };
@@ -1073,9 +1127,9 @@ async function extractSlideData(page) {
             || node.tagName === 'SUB';
           const display = computed.display;
           // Never add line breaks for materialized pseudo-elements
-          const isPseudoElement = node.className && (
-            node.className.includes('__pseudo_before__') ||
-            node.className.includes('__pseudo_after__')
+          const isPseudoElement = (
+            safeClassName(node).includes('__pseudo_before__') ||
+            safeClassName(node).includes('__pseudo_after__')
           );
           const allowInlineBreak = allowBlock
             && display
@@ -1543,7 +1597,7 @@ async function extractSlideData(page) {
         }
       }
 
-      if (el.className && el.className.includes('placeholder') && el.tagName !== 'TABLE') {
+      if (safeClassName(el).includes('placeholder') && el.tagName !== 'TABLE') {
         const rect = el.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) {
           errors.push(
@@ -2039,10 +2093,10 @@ async function extractSlideData(page) {
         const firstLiForCheck = liElements[0];
         const firstLiStyle = firstLiForCheck ? window.getComputedStyle(firstLiForCheck) : null;
         const listStyleForCheck = firstLiStyle ? (firstLiStyle.listStyleType || ulComputed.listStyleType) : ulComputed.listStyleType;
-        const isChecklistClass = el.className && (
-          el.className.includes('checklist') ||
-          el.className.includes('check-list') ||
-          el.className.includes('task-list')
+        const isChecklistClass = (
+          safeClassName(el).includes('checklist') ||
+          safeClassName(el).includes('check-list') ||
+          safeClassName(el).includes('task-list')
         );
         const isStyledList = listStyleForCheck === 'none' || isChecklistClass;
 
@@ -2069,10 +2123,10 @@ async function extractSlideData(page) {
           // Check for inline elements with display:block/inline-block that are complex
           const inlineElements = li.querySelectorAll('strong, span, b, i, em');
           return Array.from(inlineElements).some((el) => {
-            if (el.className && (
-              el.className.includes('__pseudo_before__') ||
-              el.className.includes('__pseudo_after__')
-            )) return false;
+            if (
+              safeClassName(el).includes('__pseudo_before__') ||
+              safeClassName(el).includes('__pseudo_after__')
+            ) return false;
             const computed = window.getComputedStyle(el);
             if (isBulletMarker(el, computed)) return false;
             const display = computed.display;
@@ -2418,9 +2472,9 @@ async function extractSlideData(page) {
       // These need to be extracted as text elements, not skipped
       if (INLINE_TEXT_TAGS.has(el.tagName) && el.tagName !== 'BR') {
         const computed = window.getComputedStyle(el);
-        const isPseudoElement = el.className && (
-          el.className.includes('__pseudo_before__') ||
-          el.className.includes('__pseudo_after__')
+        const isPseudoElement = (
+          safeClassName(el).includes('__pseudo_before__') ||
+          safeClassName(el).includes('__pseudo_after__')
         );
 
         // Handle pseudo-elements with visual styles (background, border, shadow, border-radius)
@@ -2666,10 +2720,10 @@ async function extractSlideData(page) {
         // Check for inline elements with display:block
         const inlineElements = el.querySelectorAll('strong, span, b, i, em');
         const hasBlockInline = Array.from(inlineElements).some((child) => {
-          if (child.className && (
-            child.className.includes('__pseudo_before__') ||
-            child.className.includes('__pseudo_after__')
-          )) return false;
+          if (
+            safeClassName(child).includes('__pseudo_before__') ||
+            safeClassName(child).includes('__pseudo_after__')
+          ) return false;
           const computed = window.getComputedStyle(child);
           if (isBulletMarker(child, computed)) return false;
           const display = computed.display;
@@ -2868,6 +2922,19 @@ async function html2pptx(htmlFile, pres, options = {}) {
 
       await page.goto(`file://${filePath}`, { timeout: TIMEOUT_MS });
 
+      // Force border-box sizing on every element. Without this, a body with
+      // fixed width/height (set to the canvas size) plus its own padding or
+      // margin silently grows past the canvas under the default content-box
+      // model, which getBodyDimensions() below then reports as "overflow"
+      // even though nothing visible is actually clipped. border-box makes
+      // width/height include padding+border, matching how slide authors
+      // normally reason about a fixed-size canvas. `!important` keeps this
+      // from being overridden by an author stylesheet that never intended to
+      // opt back into content-box.
+      await page.addStyleTag({
+        content: 'html, body { margin: 0 !important; } *, *::before, *::after { box-sizing: border-box !important; }'
+      });
+
       // Use CDP to detect the actual fonts the browser used for rendering each element.
       // This captures the real fallback fonts (e.g., system CJK fonts) that the browser chose,
       // so the PPTX can use the same fonts instead of relying on PowerPoint's own fallback.
@@ -2961,7 +3028,17 @@ async function html2pptx(htmlFile, pres, options = {}) {
           const errorMessage = validationErrors.length === 1
             ? validationErrors[0]
             : `Multiple validation errors found:\n${validationErrors.map((e, i) => `  ${i + 1}. ${e}`).join('\n')}`;
-          throw new Error(errorMessage);
+          const geometry = {
+            code: bodyDimensions.overflowElements.length ? 'html_geometry_validation' : 'collapsed_flow_margin',
+            body: bodyDimensions,
+            overflowing_element_ids: [...bodyDimensions.overflowElements, ...bodyDimensions.flowTail]
+              .map((item) => item.id || (item.className ? `css:.${item.className.split(/\s+/)[0]}` : `tag:${item.tag}`)),
+            overflow_axis: overflowAxis(bodyDimensions),
+            suggested_operation: bodyDimensions.overflowElements.length
+              ? 'move_or_resize_overflowing_element'
+              : 'replace_outer_margin_with_inner_padding',
+          };
+          throw new Error(`${errorMessage}\nSLIDEX_GEOMETRY=${JSON.stringify(geometry)}`);
         }
       }
 

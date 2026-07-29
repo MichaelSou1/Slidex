@@ -22,6 +22,22 @@ from deeppresenter.slidex.models import (
 from deeppresenter.slidex.repair import detect_policy_violations
 from deeppresenter.utils.config import SlidexConfig
 
+# S2/S5 evidence is collected once per page (each page's InspectionContext
+# carries the same deck-wide task/slide_summaries), but they judge the deck
+# as a whole rather than any single page. `_semantic_deck_results` folds the
+# per-page duplicates down to one representative result per class; downstream
+# hard-failure/affected-slide accounting must treat page_reports entries for
+# these classes as raw evidence only, not as independently countable defects.
+_DECK_LEVEL_CLASSES = {DefectClass.S2, DefectClass.S5}
+
+# S5 ("a visibly missing step or section") is judged by an LLM on coarse
+# deck-level evidence (task text + slide summaries) and has shown a
+# reproducible hallucination mode: judging a page count that already
+# satisfies the task's own requested range as "insufficient depth". Keep
+# collecting and reporting S5 findings for visibility, but do not let them
+# alone block export the way deterministic/geometry hard findings do.
+_SOFT_DEFECT_CLASSES = {DefectClass.S5}
+
 
 class DeckInspector:
     """Coordinate page and cross-page checks without indiscriminate regeneration."""
@@ -70,24 +86,33 @@ class DeckInspector:
 
         deck_results = self._deterministic_deck_results(artifacts)
         deck_results.extend(
-            self._semantic_deck_results(page_reports, {DefectClass.S2, DefectClass.S5})
+            self._semantic_deck_results(page_reports, _DECK_LEVEL_CLASSES)
         )
         violations = [
             violation
             for artifact in artifacts
             for violation in detect_policy_violations(artifact)
         ]
+        # Deck-level defect classes (S2/S5) are routed per page for evidence
+        # collection, but a single deck-level defect must only count once.
+        # `_semantic_deck_results` already picks one representative result per
+        # class into `deck_results`; page_reports still carry the raw
+        # per-page duplicates for inspection/debugging, so they must be
+        # excluded here to avoid counting the same deck-level defect once per
+        # slide.
         hard_failures = (
             sum(
                 result.status in {InspectionStatus.FAIL, InspectionStatus.ERROR}
                 and result.severity > 0
                 for report in page_reports.values()
                 for result in report.results
+                if result.defect_class not in _DECK_LEVEL_CLASSES
             )
             + sum(
                 result.status in {InspectionStatus.FAIL, InspectionStatus.ERROR}
                 and result.severity > 0
                 for result in deck_results
+                if result.defect_class not in _SOFT_DEFECT_CLASSES
             )
             + len(violations)
         )
@@ -95,7 +120,11 @@ class DeckInspector:
             {
                 slide_id
                 for slide_id, report in page_reports.items()
-                if any(_is_hard(item) for item in report.results)
+                if any(
+                    _is_hard(item)
+                    for item in report.results
+                    if item.defect_class not in _DECK_LEVEL_CLASSES
+                )
             }
             | {
                 artifact.declared_ir.slide_id
@@ -111,6 +140,7 @@ class DeckInspector:
                 if any(
                     _is_hard(result) and not result.element_ids
                     for result in deck_results
+                    if result.defect_class not in _SOFT_DEFECT_CLASSES
                 )
                 else set()
             )

@@ -103,6 +103,8 @@ async def test_agent_env_connects_local_servers_only(tmp_path: Path) -> None:
         WorkspaceTools(workspace).register(env)
         assert "local" in env._server_tools
         assert "write_file" in env._server_tools["local"]
+        assert "inspect_slide_element" in env._server_tools["local"]
+        assert "patch_slide_element" in env._server_tools["local"]
 
 
 @pytest.mark.unit
@@ -179,6 +181,17 @@ def test_workspace_tools_are_scoped_and_record_command_output(tmp_path: Path) ->
     assert tools.read_file("lines.txt", offset=1, limit=2) == "one\ntwo\n"
     tools.edit_file(html_file="nested/a.txt", old="after", new="aliased")
     assert tools.read_file("nested/a.txt") == "aliased"
+    tools.write_file(
+        "slide.html",
+        '<html><body><p data-slidex-id="body">Before</p></body></html>',
+    )
+    patch = json.loads(
+        tools.patch_html(
+            "slide.html", '[data-slidex-id="body"]', "set_style", "color", "red"
+        )
+    )
+    assert patch["operation"] == "set_style"
+    assert 'style="color: red"' in tools.read_file("slide.html")
     tools.write_file("/workspace/legacy.txt", "mapped")
     assert tools.read_file("legacy.txt") == "mapped"
     assert json.loads(tools.list_files(pattern="**/*.txt")) == [
@@ -190,6 +203,95 @@ def test_workspace_tools_are_scoped_and_record_command_output(tmp_path: Path) ->
     assert result == {"exit_code": 0, "stdout": "command-ok", "stderr": ""}
     with pytest.raises(ValueError, match="escapes workspace"):
         tools.read_file("../outside.txt")
+
+
+@pytest.mark.unit
+def test_write_file_autofixes_double_escaped_html(tmp_path: Path) -> None:
+    """Guards against a real gpt-4o-mini failure mode: JSON-encoding an HTML
+    tool-call payload twice leaves literal ``\\n``/``\\"`` sequences instead of
+    real newlines/quotes. Rejecting-and-asking-the-model-to-retry does not
+    reliably break this loop in practice -- gpt-4o-mini was observed adding
+    *another* layer of escaping on retry instead of removing one (observed
+    during 13.7 E2E smoke testing). Since the transformation is deterministic
+    and reversible, we auto-correct it instead: the file must end up with
+    real newlines/quotes, matching what the model actually meant to write.
+    """
+    tools = WorkspaceTools(tmp_path / "workspace")
+    double_escaped = (
+        '<!DOCTYPE html>\\n<html lang=\\"en\\" style=\\"width: 1280px;\\">'
+        "\\n<body>\\n</body>\\n</html>"
+    )
+    tools.write_file("slides/slide_01.html", double_escaped)
+    written = tools.read_file("slides/slide_01.html")
+    assert written == '<!DOCTYPE html>\n<html lang="en" style="width: 1280px;">\n<body>\n</body>\n</html>'
+    assert chr(92) + "n" not in written
+
+    # A normal, correctly-encoded HTML file must still write fine.
+    tools.write_file("slides/slide_01.html", "<!DOCTYPE html>\n<html>\n<body></body>\n</html>\n")
+    assert "<!DOCTYPE html>" in tools.read_file("slides/slide_01.html")
+
+
+def test_write_file_rejects_unrecoverable_multi_layer_escaping(tmp_path: Path) -> None:
+    """A pathological multi-layer escaping case (observed compounding across
+    retries, e.g. gpt-4o-mini re-escaping an already double-escaped string)
+    that our bounded auto-unescape cannot cleanly resolve must still be
+    rejected rather than silently writing corrupted content.
+    """
+    tools = WorkspaceTools(tmp_path / "workspace")
+    backslash = chr(92)
+    # A 64-backslash run before each "n" halves in length on every unescape
+    # pass (each pass turns a \\ pair into one \), so it takes 7 passes to
+    # fully resolve -- well beyond _MAX_UNESCAPE_PASSES -- and must still be
+    # flagged as double-escaped after the pass budget is exhausted.
+    run = backslash * 64
+    mangled = run + "n" + "<html>" + run + "n" + run + "n" + run + "n"
+    with pytest.raises(ValueError, match="double-escaped"):
+        tools.write_file("slides/slide_02.html", mangled)
+    assert not (tmp_path / "workspace" / "slides" / "slide_02.html").exists()
+
+    # edit_file must also reject a replacement that produces unrecoverable
+    # double-escaped output, leaving the original file untouched.
+    tools.write_file("slides/slide_01.html", "<!DOCTYPE html>\n<html>\n<body></body>\n</html>\n")
+    with pytest.raises(ValueError, match="double-escaped"):
+        tools.edit_file(
+            "slides/slide_01.html",
+            old="<body></body>",
+            new=mangled,
+        )
+    assert "<body></body>" in tools.read_file("slides/slide_01.html")
+
+
+def test_edit_file_recovers_from_escaped_old_argument(tmp_path: Path) -> None:
+    """Guards against a real gpt-4o-mini failure mode: after write_file
+    auto-corrects double-escaped HTML on disk, the model's next edit_file
+    call sometimes still tracks the file content in escaped form and passes
+    a literal ``\\"``-laden ``old`` that can never match the already-clean
+    file, causing "found 0" to repeat identically forever (observed during
+    13.7 E2E smoke testing). edit_file must retry against an unescaped
+    ``old``/``new`` before giving up.
+    """
+    tools = WorkspaceTools(tmp_path / "workspace")
+    tools.write_file(
+        "slides/slide_01.html",
+        '<p data-slidex-id="overview-1">Pico is great.</p>',
+    )
+    tools.edit_file(
+        "slides/slide_01.html",
+        old='<p data-slidex-id=\\"overview-1\\">Pico is great.</p>',
+        new='<p data-slidex-id=\\"overview-1\\">Pico is great.</p>\\n    <div></div>',
+    )
+    assert tools.read_file("slides/slide_01.html") == (
+        '<p data-slidex-id="overview-1">Pico is great.</p>\n    <div></div>'
+    )
+
+    # An old snippet that genuinely has no match (escaped or not) must still
+    # fail loudly rather than silently no-op or match the wrong thing.
+    with pytest.raises(ValueError, match="found 0"):
+        tools.edit_file(
+            "slides/slide_01.html",
+            old='<p data-slidex-id=\\"nonexistent\\">',
+            new="anything",
+        )
 
 
 @pytest.mark.unit
@@ -390,3 +492,83 @@ def test_onboard_validation_failure_preserves_existing_config(
     assert mcp_file.read_text(encoding="utf-8") == "[]"
     assert not (config_dir / ".config.yaml.pending").exists()
     assert not (config_dir / ".mcp.json.pending").exists()
+
+@pytest.mark.unit
+def test_stable_id_inspection_and_structured_slide_patch(tmp_path: Path) -> None:
+    """Repair patches target stable IDs without brittle source-string matching."""
+    tools = WorkspaceTools(tmp_path / "workspace")
+    tools.write_file(
+        "slides/slide_01.html",
+        """<!doctype html><html><body><main class="slide-content" data-slidex-id="content">
+        <h1 data-slidex-id="title" style="font-size: 42px">Before</h1>
+        <p data-slidex-id="body">Body copy</p></main></body></html>""",
+    )
+
+    index = json.loads(tools.inspect_slide_element("slides/slide_01.html"))
+    assert [item["element_id"] for item in index["elements"]] == ["body", "content", "title"]
+    title = json.loads(tools.inspect_slide_element("slides/slide_01.html", "title"))
+    assert title["inline_style"] == {"font-size": "42px"}
+    assert title["text"] == "Before"
+
+    patch = json.loads(
+        tools.patch_slide_element(
+            "slides/slide_01.html",
+            "title",
+            styles={"font-size": "32px", "line-height": "1.15"},
+            text="After",
+            attributes={"aria-label": "Slide title"},
+        )
+    )
+    assert patch["element_id"] == "title"
+    assert patch["before"]["text"] == "Before"
+    assert patch["after"]["text"] == "After"
+    assert patch["after"]["inline_style"] == {
+        "font-size": "32px",
+        "line-height": "1.15",
+    }
+    assert patch["after"]["attributes"] == {"aria-label": "Slide title"}
+
+    with pytest.raises(ValueError, match="unsupported style"):
+        tools.patch_slide_element(
+            "slides/slide_01.html", "title", styles={"animation": "spin 1s"}
+        )
+    with pytest.raises(ValueError, match="No element"):
+        tools.inspect_slide_element("slides/slide_01.html", "missing")
+    with pytest.raises(ValueError, match="leaf child IDs.*title.*body"):
+        tools.patch_slide_element("slides/slide_01.html", "content", text="Would delete children")
+
+@pytest.mark.unit
+def test_stable_id_inventory_exposes_actual_repair_targets(tmp_path: Path) -> None:
+    """Repair context must expose source IDs instead of asking the model to infer them."""
+    from deeppresenter.main import _repair_stable_id_context
+    from deeppresenter.slidex.authoring import stable_id_inventory
+
+    slides = tmp_path / "slides"
+    slides.mkdir()
+    (slides / "slide_01.html").write_text(
+        """<html><body><main><h1 data-slidex-id="title">Overview</h1>
+        <ul data-slidex-id="capability-list"><li data-slidex-id="capability-a">Search</li>
+        <li data-slidex-id="capability-b">Repair</li></ul></main></body></html>""",
+        encoding="utf-8",
+    )
+
+    inventory = stable_id_inventory(slides / "slide_01.html")
+    assert inventory == {
+        "slide": "slide_01.html",
+        "elements": [
+            {"element_id": "title", "tag": "h1", "text": "Overview", "text_patchable": True},
+            {"element_id": "capability-list", "tag": "ul", "text": "Search Repair", "text_patchable": False},
+            {"element_id": "capability-a", "tag": "li", "text": "Search", "text_patchable": True},
+            {"element_id": "capability-b", "tag": "li", "text": "Repair", "text_patchable": True},
+        ],
+    }
+    context = json.loads(_repair_stable_id_context(slides))
+    assert context["stable_id_inventory"] == [inventory]
+
+
+@pytest.mark.unit
+def test_repair_stable_id_context_requires_existing_slides(tmp_path: Path) -> None:
+    from deeppresenter.main import _repair_stable_id_context
+
+    with pytest.raises(RuntimeError, match="existing HTML slides"):
+        _repair_stable_id_context(tmp_path)

@@ -80,6 +80,7 @@ class EvidenceSource(StrEnum):
     RENDER = "render"
     CLEAN_REFERENCE = "clean_reference"
     DECK_TEXT = "deck_text"
+    MODEL = "model"
 
 
 class BoundingBox(SlidexModel):
@@ -585,6 +586,39 @@ class AtomicVerdict(SlidexModel):
     @model_validator(mode="after")
     def validate_defer_reason(self) -> AtomicVerdict:
         if self.verdict == "defer" and not self.defer_reason:
+            raise ValueError("defer_reason is required for a deferred verdict")
+        return self
+
+
+class WholeRubricFinding(SlidexModel):
+    """One defect finding from a single whole-rubric VLM pass (E2E generic critic)."""
+
+    defect_class: DefectClass
+    severity: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    evidence: list[str] = Field(min_length=1)
+    element_ids: list[str] = Field(default_factory=list)
+    repair_suggestion: str | None = None
+
+
+class WholeRubricVerdict(SlidexModel):
+    """Structured response for one full-rubric VLM call over an entire slide.
+
+    Unlike :class:`AtomicVerdict` (one targeted defect class per call), this
+    schema lets a single call report zero or more defects in one pass, which
+    is what the Phase 13 ``generic critic`` E2E arm (13.7) requires: "a single
+    whole-rubric VLM verdict" that the agent then tries to repair.
+    """
+
+    findings: list[WholeRubricFinding] = Field(default_factory=list)
+    overall_verdict: Literal["pass", "fail", "defer"]
+    defer_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_consistency(self) -> WholeRubricVerdict:
+        if self.overall_verdict == "fail" and not self.findings:
+            raise ValueError("a fail verdict requires at least one finding")
+        if self.overall_verdict == "defer" and not self.defer_reason:
             raise ValueError("defer_reason is required for a deferred verdict")
         return self
 

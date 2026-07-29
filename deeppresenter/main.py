@@ -15,9 +15,19 @@ from deeppresenter.agents.pptagent import PPTAgent
 from deeppresenter.agents.research import Research
 from deeppresenter.agents.subagent import SubAgent
 from deeppresenter.slidex.artifacts import ArtifactStore
-from deeppresenter.slidex.browser import BrowserObserver, extract_declared_ir
-from deeppresenter.slidex.critic import HybridCritic, persist_report
+from deeppresenter.slidex.browser import (
+    BrowserObservation,
+    BrowserObserver,
+    extract_declared_ir,
+)
+from deeppresenter.slidex.critic import GenericWholeRubricCritic, HybridCritic, persist_report
 from deeppresenter.slidex.deck import DeckInspector, enforce_export_gate
+from deeppresenter.slidex.authoring import (
+    authoring_skill,
+    authoring_skill_hash,
+    preflight_html,
+    stable_id_inventory,
+)
 from deeppresenter.slidex.export import (
     FinalExportService,
     RenderFidelityValidator,
@@ -54,7 +64,7 @@ from deeppresenter.utils.constants import WORKSPACE_BASE
 from deeppresenter.utils.log import debug, error, set_logger, timer
 from deeppresenter.utils.outline import Outline
 from deeppresenter.utils.typings import ChatMessage, ConvertType, InputRequest, Role
-from deeppresenter.utils.webview import convert_html_to_pptx
+from deeppresenter.utils.webview import Html2PptxError, convert_html_to_pptx
 from pypdf import PdfReader
 
 
@@ -62,6 +72,19 @@ def _exact_page_count(value: str | None) -> int | None:
     if not value or not value.strip().isdigit():
         return None
     return int(value.strip())
+
+
+def _repair_stable_id_context(slide_directory: Path) -> str:
+    """Serialize the actual patch targets present in a resumed slide workspace."""
+    inventories = [
+        stable_id_inventory(path)
+        for path in sorted(slide_directory.glob("slide_*.html"))
+    ]
+    if not inventories:
+        raise RuntimeError("repair_only requires existing HTML slides in slides/")
+    return json.dumps(
+        {"stable_id_inventory": inventories}, ensure_ascii=False, separators=(",", ":")
+    )
 
 
 def _outline_titles(path: str | Path | None) -> list[str]:
@@ -148,22 +171,67 @@ class AgentLoop:
             ).hexdigest(),
         )
 
+    def _build_slide_critic(
+        self, critic_arm: Literal["no_critic", "generic", "hybrid"]
+    ):
+        """Instantiate the per-slide critic for one Phase 13 E2E arm (13.7).
+
+        Only ``inspect_slide`` (per-slide, in-loop feedback) consults this;
+        the final deck-level ``enforce_export_gate`` always uses the frozen
+        ``HybridCritic`` regardless of arm, since that is the "necessary
+        export safety check" every arm keeps per 13.7.
+        """
+        if critic_arm == "generic":
+            if self.config.critic_model is None:
+                raise RuntimeError(
+                    "generic critic arm requires a configured critic_model"
+                )
+            return GenericWholeRubricCritic(
+                critic_model=self.config.critic_model,
+                router_version=self.config.slidex.router_version,
+                taxonomy_version=self.config.slidex.taxonomy_version,
+            )
+        return HybridCritic(
+            self.config.slidex,
+            critic_model=self.config.critic_model,
+            semantic_model=self.config.semantic_model,
+        )
+
     @timer("Slidex Loop")
     async def run(
         self,
         request: InputRequest,
         check_llms: bool = False,
         soft_parsing: bool = False,
+        critic_arm: Literal["no_critic", "generic", "hybrid"] = "hybrid",
+        max_repairs: int | None = None,
+        model_budget: int | None = None,
+        repair_only: bool = False,
     ) -> AsyncGenerator[str | ChatMessage, None]:
         """Main loop for DeepPresenter generation process.
         Arguments:
             request: InputRequest object containing task details.
             check_llms: Whether to check LLM availability before running.
             soft_parsing: Explicitly enable warning-ignoring html2pptx soft mode.
+            repair_only: Resume an existing workspace's frozen manuscript/slides for
+                critic-guided repair without re-running Research or initial drafting.
+            critic_arm: Phase 13 E2E experimental arm (13.7). ``"hybrid"`` (default)
+                is the frozen symbolic-neural-reference router with up to
+                ``max_repair_rounds`` repair iterations. ``"generic"`` replaces the
+                per-slide router with a single whole-rubric VLM verdict per
+                inspection, still with up to ``max_repair_rounds`` repairs.
+                ``"no_critic"`` never registers the ``inspect_slide``/``apply_repair``
+                feedback tools (the agent gets no repair signal at all) but still
+                runs the final deck-level hard export gate, matching 13.7's "no
+                feedback, no repair, only the necessary export safety check".
         Yields:
             ChatMessage or final output path (str). Outline path stored in intermediate_output["outline"].
         """
         run_started = time.perf_counter()
+        repair_budget = self.config.slidex.max_repair_rounds if max_repairs is None else max_repairs
+        episode_budget = self.config.slidex.max_episode_steps if model_budget is None else model_budget
+        if repair_budget < 0 or episode_budget < 1:
+            raise ValueError("max_repairs must be non-negative and model_budget must be positive")
         participating_agents = []
         if not self.config.design_agent.is_multimodal and self.config.heavy_reflect:
             debug(
@@ -194,44 +262,52 @@ class AgentLoop:
                 None,
             )
             if inspection_server is not None:
+                # The reflect.py MCP server declares its own inspect_slide/
+                # render_slide; this loop always registers its own versions
+                # below (with lineage/critic wiring the bare MCP tool lacks),
+                # so both names must be stripped from the MCP tool list or
+                # the model sees two conflicting declarations of each name.
+                overridden_tool_names = {"inspect_slide", "render_slide"}
                 agent_env._server_tools[inspection_server] = [
                     tool
                     for tool in agent_env._server_tools[inspection_server]
-                    if tool != "inspect_slide"
+                    if tool not in overridden_tool_names
                 ]
-                agent_env._tool_to_server.pop("inspect_slide", None)
-                agent_env._tools_dict.pop("inspect_slide", None)
+                for tool_name in overridden_tool_names:
+                    agent_env._tool_to_server.pop(tool_name, None)
+                    agent_env._tools_dict.pop(tool_name, None)
 
             inspected_artifacts: dict[str, SlideArtifact] = {}
             inspection_reports = {}
             inspection_rounds: dict[str, int] = {}
+            repair_stalls: dict[str, int] = {}
+            conversion_failure_signatures: dict[str, tuple[str, int]] = {}
             pending_repairs: dict[str, list[RepairAction]] = {}
             repair_proposals: dict[str, RepairAction] = {}
             latest_artifact_ids: dict[str, str] = {}
             latest_source_hashes: dict[str, str] = {}
+            artifact_store = ArtifactStore(
+                self.workspace / ".history" / "slidex",
+                max_workspace_bytes=self.config.slidex.max_workspace_bytes,
+                max_artifacts=self.config.slidex.max_artifacts_per_episode,
+            )
+            # Lazily created on first _persist_artifact_snapshot call so
+            # arms/paths that never inspect a slide (e.g. the PPTAgent
+            # branch) do not leave an empty episode directory behind.
+            artifact_episode_ref: dict[str, str] = {}
 
-            async def inspect_slide(
-                html_file: str,
-                aspect_ratio: Literal["16:9", "4:3", "A1", "A2", "A3", "A4"] = "16:9",
-            ) -> str:
-                """Inspect one revision; every source repair requires this fresh check."""
-                html_path = WorkspaceTools(self.workspace)._resolve(html_file)
+            async def _persist_artifact_snapshot(
+                html_path: Path, aspect_ratio: Literal["16:9", "4:3", "A1", "A2", "A3", "A4"]
+            ) -> tuple[SlideArtifact, BrowserObservation, str]:
+                """Render, extract IR, and persist one SlideArtifact snapshot.
+
+                This is the arm-agnostic half of inspection: it always runs so
+                that every 13.7 arm (including ``no_critic``) populates
+                ``inspected_artifacts`` for the final deck-level export gate.
+                Critic feedback (the actual repair signal) is layered on top
+                by callers that want it; ``no_critic`` intentionally skips it.
+                """
                 key = str(html_path)
-                rounds = inspection_rounds.get(key, 0)
-                if rounds >= self.config.slidex.max_repair_rounds + 1:
-                    prior = inspection_reports.get(key)
-                    if prior is None:
-                        raise RuntimeError(
-                            "repair budget exhausted before initial inspection"
-                        )
-                    payload = prior.model_dump()
-                    payload["summary"]["terminal_reason"] = "max_repair_rounds"
-                    payload["summary"]["repair_rounds"] = rounds - 1
-                    return json.dumps(
-                        payload, ensure_ascii=False, indent=2, default=str
-                    )
-                # Syntax/conversion failures are preflight errors, not quality repair
-                # rounds. Charge the budget only after a report can be produced.
                 await convert_html_to_pptx(html_path, aspect_ratio=aspect_ratio)
                 observation_dir = (
                     self.workspace / ".history" / "observations" / html_path.stem
@@ -260,21 +336,14 @@ class AgentLoop:
                         f"Slide render is not ready: {observation.computed_ir.resource_errors + observation.computed_ir.page_errors}"
                     )
 
-                store = ArtifactStore(
-                    self.workspace / ".history" / "slidex",
-                    max_workspace_bytes=self.config.slidex.max_workspace_bytes,
-                    max_artifacts=self.config.slidex.max_artifacts_per_episode,
-                )
-                episode_id = getattr(inspect_slide, "episode_id", None)
-                if episode_id is None:
-                    episode = store.create_episode(
+                if "episode_id" not in artifact_episode_ref:
+                    artifact_episode_ref["episode_id"] = artifact_store.create_episode(
                         versions={
                             "taxonomy": self.config.slidex.taxonomy_version,
                             "router": self.config.slidex.router_version,
+                            "authoring_skill": authoring_skill_hash(),
                         }
-                    )
-                    episode_id = episode.episode_id
-                    inspect_slide.episode_id = episode_id
+                    ).episode_id
                 source = html_path.read_bytes()
                 renderer = RendererInfo(
                     name=observation.computed_ir.browser,
@@ -320,21 +389,85 @@ class AgentLoop:
                 }
                 if observation.overlay_path:
                     files["renders/overlay.png"] = observation.overlay_path
-                manifest = store.write_artifact(
-                    episode_id, files, provenance, slide_artifact
+                manifest = artifact_store.write_artifact(
+                    artifact_episode_ref["episode_id"], files, provenance, slide_artifact
                 )
                 persisted_artifact = slide_artifact.model_copy(
                     update={"artifact_id": manifest.artifact_id}
                 )
-                previous_artifact_id = latest_artifact_ids.get(key)
-                previous_source_hash = latest_source_hashes.get(key)
                 latest_artifact_ids[key] = manifest.artifact_id
                 latest_source_hashes[key] = slide_artifact.source_sha256
-                critic = HybridCritic(
-                    self.config.slidex,
-                    critic_model=self.config.critic_model,
-                    semantic_model=self.config.semantic_model,
+                inspected_artifacts[html_path.stem] = persisted_artifact
+                return persisted_artifact, observation, slide_artifact.source_sha256
+
+            def _geometry_failure_payload(html_path: Path, exc: Html2PptxError) -> str:
+                """Return a stable, bounded response for repeated conversion failures."""
+                key = str(html_path)
+                geometry = exc.geometry or {}
+                signature = json.dumps(geometry, sort_keys=True) if geometry else str(exc)
+                previous_signature, repeats = conversion_failure_signatures.get(key, ("", 0))
+                repeats = repeats + 1 if previous_signature == signature else 1
+                conversion_failure_signatures[key] = (signature, repeats)
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "code": geometry.get("code", "html_geometry_validation"),
+                        "message": str(exc).split("SLIDEX_GEOMETRY=", 1)[0].strip(),
+                        "geometry": geometry,
+                        "repeated_failure_count": repeats,
+                        "terminal": repeats >= 2,
+                        "next_action": (
+                            "Do not retry this unchanged geometry error. Continue to other slides or finalize with this slide unresolved."
+                            if repeats >= 2
+                            else "Make one targeted edit using geometry.body.flowTail / overflowElements and the suggested_operation."
+                        ),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
                 )
+
+            def preflight_slide(
+                html_file: str,
+                aspect_ratio: Literal["16:9", "4:3", "A1", "A2", "A3", "A4"] = "16:9",
+            ) -> str:
+                """Return deterministic authoring-contract errors before rendering."""
+                html_path = WorkspaceTools(self.workspace)._resolve(html_file)
+                return json.dumps(preflight_html(html_path, aspect_ratio), ensure_ascii=False)
+
+            async def inspect_slide(
+                html_file: str,
+                aspect_ratio: Literal["16:9", "4:3", "A1", "A2", "A3", "A4"] = "16:9",
+            ) -> str:
+                """Inspect one revision; every source repair requires this fresh check."""
+                html_path = WorkspaceTools(self.workspace)._resolve(html_file)
+                preflight = preflight_html(html_path, aspect_ratio)
+                if not preflight["ok"]:
+                    return json.dumps(preflight, ensure_ascii=False)
+                key = str(html_path)
+                rounds = inspection_rounds.get(key, 0)
+                if rounds >= repair_budget + 1:
+                    prior = inspection_reports.get(key)
+                    if prior is None:
+                        raise RuntimeError(
+                            "repair budget exhausted before initial inspection"
+                        )
+                    payload = prior.model_dump()
+                    payload["summary"]["terminal_reason"] = "max_repair_rounds"
+                    payload["summary"]["repair_rounds"] = rounds - 1
+                    return json.dumps(
+                        payload, ensure_ascii=False, indent=2, default=str
+                    )
+                # Syntax/conversion failures are preflight errors, not quality repair
+                # rounds. Charge the budget only after a report can be produced.
+                previous_artifact_id = latest_artifact_ids.get(key)
+                previous_source_hash = latest_source_hashes.get(key)
+                try:
+                    persisted_artifact, observation, source_sha256 = (
+                        await _persist_artifact_snapshot(html_path, aspect_ratio)
+                    )
+                except Html2PptxError as exc:
+                    return _geometry_failure_payload(html_path, exc)
+                critic = self._build_slide_critic(critic_arm)
                 report = await critic.inspect(
                     InspectionContext(
                         artifact=persisted_artifact,
@@ -344,10 +477,10 @@ class AgentLoop:
                 violations = detect_policy_violations(persisted_artifact)
                 report = report.model_copy(update={"policy_violations": violations})
                 report_uri = persist_report(
-                    store,
-                    episode_id,
+                    artifact_store,
+                    artifact_episode_ref["episode_id"],
                     report,
-                    parent_artifact_id=manifest.artifact_id,
+                    parent_artifact_id=persisted_artifact.artifact_id,
                 )
                 report = report.model_copy(update={"report_uri": report_uri})
                 explicit_repairs = pending_repairs.pop(key, [])
@@ -357,14 +490,14 @@ class AgentLoop:
                         self.workspace / ".history" / "slidex" / "repair_actions.jsonl",
                         bind_after_artifact(
                             pending,
-                            manifest.artifact_id,
+                            persisted_artifact.artifact_id,
                             before_report=previous_report,
                             after_report=report,
                         ),
                     )
                 if (
                     previous_artifact_id
-                    and previous_source_hash != slide_artifact.source_sha256
+                    and previous_source_hash != source_sha256
                     and not explicit_repairs
                 ):
                     source_ids = (
@@ -386,10 +519,10 @@ class AgentLoop:
                             }
                         )
                         or ["slide-root"],
-                        constraints={"source_sha256": slide_artifact.source_sha256},
+                        constraints={"source_sha256": source_sha256},
                         source_inspection_ids=source_ids,
                         before_artifact_id=previous_artifact_id,
-                        after_artifact_id=manifest.artifact_id,
+                        after_artifact_id=persisted_artifact.artifact_id,
                         status="applied",
                         policy_reason="Source changed outside deterministic repair tooling.",
                         defect_delta=(
@@ -402,7 +535,6 @@ class AgentLoop:
                         self.workspace / ".history" / "slidex" / "repair_actions.jsonl",
                         inferred,
                     )
-                inspected_artifacts[html_path.stem] = persisted_artifact
                 inspection_reports[key] = report
                 inspection_rounds[key] = rounds + 1
                 failed_results = [
@@ -410,6 +542,23 @@ class AgentLoop:
                     for finding in report.results
                     if finding.status.value in {"fail", "error"}
                 ]
+                prior_failed = [
+                    finding
+                    for finding in (previous_report.results if previous_report else [])
+                    if finding.status.value in {"fail", "error"}
+                ]
+                current_severity = sum(finding.severity for finding in failed_results)
+                prior_severity = sum(finding.severity for finding in prior_failed)
+                current_targets = sorted(
+                    element_id for finding in failed_results for element_id in finding.element_ids
+                )
+                prior_targets = sorted(
+                    element_id for finding in prior_failed for element_id in finding.element_ids
+                )
+                no_improvement = bool(previous_report) and (
+                    current_severity >= prior_severity and current_targets == prior_targets
+                )
+                repair_stalls[key] = repair_stalls.get(key, 0) + 1 if no_improvement else 0
                 proposed_actions = actions_from_report(report)
                 repair_proposals.update(
                     {action.action_id: action for action in proposed_actions}
@@ -438,9 +587,22 @@ class AgentLoop:
                 }
                 payload["summary"]["repair_rounds"] = rounds + 1
                 payload["summary"]["repair_rounds_remaining"] = max(
-                    0, self.config.slidex.max_repair_rounds - rounds
+                    0, repair_budget - rounds
                 )
                 payload["summary"]["hard_policy_violations"] = len(violations)
+                payload["summary"]["repair_stall_count"] = repair_stalls[key]
+                if repair_stalls[key] >= 2:
+                    payload["summary"]["repair_strategy"] = (
+                        "NO_IMPROVEMENT: two verified repair cycles left the same hard findings "
+                        "unchanged. Stop repeating micro-style patches on these IDs. Choose a "
+                        "different proposed action/target, make a structural layout change, or "
+                        "leave the finding unresolved and continue to another slide."
+                    )
+                    payload["summary"]["blocked_repeat_target_ids"] = current_targets
+                else:
+                    payload["summary"]["repair_strategy"] = (
+                        "After one targeted repair, call inspect_slide again before any further source patch."
+                    )
                 return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
 
             def apply_repair(html_file: str, action: dict) -> str:
@@ -458,7 +620,14 @@ class AgentLoop:
                 repair = RepairAction.model_validate(payload)
                 if repair.before_artifact_id != current.artifact_id:
                     raise ValueError(
-                        "repair action does not target the latest inspected artifact"
+                        "repair action does not target the latest inspected artifact: "
+                        f"before_artifact_id={repair.before_artifact_id!r} but the most "
+                        f"recent inspect_slide call for {html_path.name} returned "
+                        f"artifact_id={current.artifact_id!r}. Set before_artifact_id to "
+                        f"{current.artifact_id!r} and reuse a repair_actions proposal from "
+                        "the latest inspect_slide report (or call inspect_slide again if "
+                        "you no longer have that report), instead of inventing a new "
+                        "action shape."
                     )
                 executed = DeterministicRepairer().apply(html_path, repair)
                 append_repair_trajectory(
@@ -484,12 +653,78 @@ class AgentLoop:
                 )
                 return str(observation.screenshot_path)
 
-            agent_env.register_tool(inspect_slide)
-            agent_env.register_tool(apply_repair)
-            agent_env.register_tool(render_slide)
+            agent_env.register_tool(preflight_slide)
+
+            if critic_arm == "no_critic":
+                # 13.7: no feedback, no repair. Role configs (Design/Research
+                # YAML) statically declare inspect_slide as a required tool,
+                # so it must still be registered; these passthrough versions
+                # never surface a defect/repair signal, so the agent cannot
+                # act on them, while apply_repair is refused outright since
+                # there is nothing to repair against. It still persists a
+                # SlideArtifact snapshot via _persist_artifact_snapshot (same
+                # helper the real inspect_slide uses) so inspected_artifacts
+                # is populated for the final deck-level export gate/report --
+                # 13.7 keeps that "necessary export safety check" for every
+                # arm even though no_critic gets zero in-loop feedback.
+                async def inspect_slide_passthrough(
+                    html_file: str,
+                    aspect_ratio: Literal["16:9", "4:3", "A1", "A2", "A3", "A4"] = "16:9",
+                ) -> str:
+                    """Mandatory record-only check: no_critic arm returns no defect
+                    feedback, but every slide file must still be passed to this tool
+                    exactly once *successfully* before finalize -- if this call raises
+                    (e.g. an html2pptx validation error), the slide is NOT recorded and
+                    export will be blocked later; fix the file and call this tool again
+                    until it returns successfully for every slide.
+                    """
+                    html_path = WorkspaceTools(self.workspace)._resolve(html_file)
+                    preflight = preflight_html(html_path, aspect_ratio)
+                    if not preflight["ok"]:
+                        return json.dumps(preflight, ensure_ascii=False)
+                    try:
+                        await _persist_artifact_snapshot(html_path, aspect_ratio)
+                    except Html2PptxError as exc:
+                        return _geometry_failure_payload(html_path, exc)
+                    return json.dumps(
+                        {
+                            "summary": {
+                                "note": (
+                                    "no_critic arm: defect feedback is disabled by design "
+                                    "(13.7), but this slide is now recorded for the export "
+                                    "gate. This call must still succeed once per slide "
+                                    "(re-run after any edit or failure) or export will be "
+                                    "blocked."
+                                )
+                            },
+                            "findings": [],
+                            "repair_actions": [],
+                        }
+                    )
+
+                def apply_repair_disabled(html_file: str, action: dict) -> str:
+                    raise ValueError(
+                        "apply_repair is unavailable in the no_critic arm (13.7)"
+                    )
+
+                # register_tool derives the exposed tool name from
+                # func.__name__, and Design/Research role YAML statically
+                # requires tools literally named inspect_slide/apply_repair;
+                # rename these closures post-hoc so they satisfy that
+                # contract while keeping distinct Python identifiers above.
+                inspect_slide_passthrough.__name__ = "inspect_slide"
+                apply_repair_disabled.__name__ = "apply_repair"
+                agent_env.register_tool(inspect_slide_passthrough)
+                agent_env.register_tool(apply_repair_disabled)
+                agent_env.register_tool(render_slide)
+            else:
+                agent_env.register_tool(inspect_slide)
+                agent_env.register_tool(apply_repair)
+                agent_env.register_tool(render_slide)
             hello_message = (
                 f"Slidex request_id={request.task_id} episode_id={self.workspace.stem} "
-                f"running in {self.workspace}, attachments={len(request.attachments)}"
+                f"running in {self.workspace}, attachments={len(request.attachments)}\n"
+                f"{authoring_skill()}"
             )
             modes = []
             if self.config.offline_mode:
@@ -510,7 +745,7 @@ class AgentLoop:
                     agent_env,
                     self.workspace,
                     self.language,
-                    max_turns=self.config.slidex.max_episode_steps,
+                    max_turns=episode_budget,
                 )
                 self.agent = self.planner
                 participating_agents.append(self.planner)
@@ -531,36 +766,51 @@ class AgentLoop:
                     await self.planner_gen.aclose()
                     self.save_results()
 
-            self.research_agent = Research(
-                self.config,
-                agent_env,
-                self.workspace,
-                self.language,
-                max_turns=self.config.slidex.max_episode_steps,
-            )
-            self.agent = self.research_agent
-            participating_agents.append(self.research_agent)
-            try:
-                async for msg in self.research_agent.loop(
-                    request, self.intermediate_output.get("outline", None)
-                ):
-                    if isinstance(msg, str):
-                        md_file = Path(msg)
-                        if not md_file.is_absolute():
-                            md_file = self.workspace / md_file
-                        self.intermediate_output["manuscript"] = md_file
-                        msg = str(md_file)
-                        break
-                    yield msg
-            except Exception as e:
-                error_message = (
-                    f"Research agent failed with error: {e}\n{traceback.format_exc()}"
+            if repair_only:
+                saved = self.workspace / "intermediate_output.json"
+                if not saved.exists():
+                    raise RuntimeError("repair_only requires an initial workspace with intermediate_output.json")
+                payload = json.loads(saved.read_text(encoding="utf-8"))
+                manuscript = payload.get("manuscript")
+                if not manuscript:
+                    raise RuntimeError("repair_only initial workspace has no manuscript")
+                md_file = Path(manuscript)
+                if not md_file.is_absolute():
+                    md_file = self.workspace / md_file
+                if not md_file.exists():
+                    raise RuntimeError("repair_only manuscript is missing from initial workspace")
+                self.intermediate_output["manuscript"] = md_file
+            else:
+                self.research_agent = Research(
+                    self.config,
+                    agent_env,
+                    self.workspace,
+                    self.language,
+                    max_turns=episode_budget,
                 )
-                error(error_message)
-                raise e
-            finally:
-                self.research_agent.save_history()
-                self.save_results()
+                self.agent = self.research_agent
+                participating_agents.append(self.research_agent)
+                try:
+                    async for msg in self.research_agent.loop(
+                        request, self.intermediate_output.get("outline", None)
+                    ):
+                        if isinstance(msg, str):
+                            md_file = Path(msg)
+                            if not md_file.is_absolute():
+                                md_file = self.workspace / md_file
+                            self.intermediate_output["manuscript"] = md_file
+                            msg = str(md_file)
+                            break
+                        yield msg
+                except Exception as e:
+                    error_message = (
+                        f"Research agent failed with error: {e}\n{traceback.format_exc()}"
+                    )
+                    error(error_message)
+                    raise e
+                finally:
+                    self.research_agent.save_history()
+                    self.save_results()
 
             if request.convert_type == ConvertType.PPTAGENT:
                 self.pptagent = PPTAgent(
@@ -568,7 +818,7 @@ class AgentLoop:
                     agent_env,
                     self.workspace,
                     self.language,
-                    max_turns=self.config.slidex.max_episode_steps,
+                    max_turns=episode_budget,
                 )
                 self.agent = self.pptagent
                 participating_agents.append(self.pptagent)
@@ -642,12 +892,29 @@ class AgentLoop:
                     agent_env,
                     self.workspace,
                     self.language,
-                    max_turns=self.config.slidex.max_episode_steps,
+                    max_turns=episode_budget,
                 )
+                self.designagent.require_repair_inspection = repair_only
                 self.agent = self.designagent
                 participating_agents.append(self.designagent)
                 try:
-                    async for msg in self.designagent.loop(request, str(md_file)):
+                    design_request = request
+                    if repair_only:
+                        stable_id_context = _repair_stable_id_context(self.workspace / "slides")
+                        design_request = request.model_copy(
+                            update={
+                                "instruction": (
+                                    "Repair the existing HTML slides in slides/. Do not create a new deck or "
+                                    "renumber stable IDs. The following is the authoritative current stable-ID "
+                                    "inventory from the cloned workspace. Use only these exact IDs; never invent "
+                                    "semantic IDs. Before each targeted patch, call inspect_slide_element for that "
+                                    "ID. First call preflight_slide and inspect_slide for each existing slide, "
+                                    "apply only allowed report repair actions, then finalize.\n\n"
+                                    f"{stable_id_context}"
+                                )
+                            }
+                        )
+                    async for msg in self.designagent.loop(design_request, str(md_file)):
                         if isinstance(msg, str):
                             slide_html_dir = Path(msg)
                             if not slide_html_dir.is_absolute():

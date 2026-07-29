@@ -25,6 +25,7 @@ from deeppresenter.utils.config import (
 )
 from deeppresenter.utils.constants import (
     AGENT_PROMPT,
+    TOOLCALL_LIMIT_PROMPT,
     CONTEXT_MODE_PROMPT,
     CONTINUE_MSG,
     HALF_BUDGET_NOTICE_MSG,
@@ -66,6 +67,7 @@ class Agent:
         max_turns: int | None = None,
     ):
         self.name = self.__class__.__name__
+        self.config = config
         self.cost = Cost()
         self.context_length = 0
         self.context_warning = 0
@@ -77,6 +79,8 @@ class Agent:
         self.max_context_turns = config.max_context_folds
         self.max_turns = max_turns
         self.turn_count = 0
+        self._edit_failures: dict[str, int] = {}
+        self._patch_html_failures: dict[str, int] = {}
         role_config_file = (
             Path(config_file)
             if config_file
@@ -109,12 +113,22 @@ class Agent:
         self.prompt: Template = Template(
             self.role_config.instruction, undefined=StrictUndefined
         )
-        if any(t["function"]["name"] == "execute_command" for t in self.tools):
+        if any(t["function"]["name"] == "run_command" for t in self.tools):
             self.system += AGENT_PROMPT.format(
                 workspace=self.workspace,
                 cutoff_len=self.agent_env.cutoff_len,
                 time=datetime.now().strftime("%Y-%m-%d"),
                 max_toolcall_per_turn=MAX_TOOLCALL_PER_TURN,
+            )
+        else:
+            # Agents without `run_command` (e.g. Design) never see the full
+            # AGENT_PROMPT block above, which is where the toolcall limit is
+            # normally mentioned. Still tell them the hard per-turn cap so an
+            # agent that fans work out across many files (one write_file per
+            # slide) knows to batch across turns instead of firing them all
+            # in one turn and having the whole turn rejected.
+            self.system += TOOLCALL_LIMIT_PROMPT.format(
+                max_toolcall_per_turn=MAX_TOOLCALL_PER_TURN
             )
 
         if any(t["function"]["name"] == "delegate_subagent" for t in self.tools):
@@ -152,11 +166,13 @@ class Agent:
                 f"{', '.join(missing_servers)}"
             )
         self.tools = []
+        added_tool_names: set[str] = set()
         for server in toolset.include_tool_servers:
             if server not in toolset.exclude_tool_servers:
                 for tool in self.agent_env._server_tools[server]:
-                    if tool not in toolset.exclude_tools:
+                    if tool not in toolset.exclude_tools and tool not in added_tool_names:
                         self.tools.append(self.agent_env._tools_dict[tool])
+                        added_tool_names.add(tool)
 
         missing_tools = set(toolset.include_tools) - self.agent_env._tools_dict.keys()
         if missing_tools:
@@ -164,9 +180,16 @@ class Agent:
                 f"Role {self.name} references unavailable tools: "
                 f"{', '.join(sorted(missing_tools))}"
             )
+        # `include_tools` may legitimately re-list a tool already pulled in
+        # via `include_tool_servers` (e.g. to document intent), so skip
+        # anything already added instead of appending a duplicate schema.
+        # Some providers (e.g. kimi-k3) reject tool lists with a repeated
+        # function name outright, so this dedupe is required for
+        # correctness, not just tidiness.
         for tool_name, tool in self.agent_env._tools_dict.items():
-            if tool_name in toolset.include_tools:
+            if tool_name in toolset.include_tools and tool_name not in added_tool_names:
                 self.tools.append(tool)
+                added_tool_names.add(tool_name)
 
     async def chat(
         self,
@@ -261,21 +284,99 @@ class Agent:
         Loop interface, return the message or the outcome filepath of the agent.
         """
 
+    @staticmethod
+    def _tool_signature(tool_call: ToolCall) -> str:
+        """Return a canonical signature for retry-sensitive tool calls."""
+        try:
+            arguments = json.loads(tool_call.function.arguments or "{}")
+        except json.JSONDecodeError:
+            arguments = tool_call.function.arguments
+        return json.dumps(
+            {"tool": tool_call.function.name, "arguments": arguments},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def _edit_failure_observation(
+        self, tool_call: ToolCall, observation: ChatMessage
+    ) -> ChatMessage:
+        """Open a circuit for repeated brittle repair calls and prescribe IDs."""
+        tool_name = tool_call.function.name
+        if tool_name == "edit_file":
+            if "Expected exactly one match" not in observation.text:
+                return observation
+            failures = self._edit_failures
+            label = "EDIT_FILE_TERMINAL"
+            condition = "the same exact-text replacement failed twice"
+        elif tool_name == "patch_html":
+            if not observation.is_error:
+                return observation
+            failures = self._patch_html_failures
+            label = "PATCH_HTML_CIRCUIT_OPEN"
+            condition = "the same selector patch failed twice"
+        else:
+            return observation
+
+        signature = self._tool_signature(tool_call)
+        count = failures.get(signature, 0) + 1
+        failures[signature] = count
+        if count < 2:
+            return observation
+        observation.content = [
+            {
+                "type": "text",
+                "text": (
+                    f"{label}: {condition}. This exact call is now blocked for the "
+                    "rest of this run; do not retry it. Call inspect_slide_element(path) "
+                    "to obtain the real data-slidex-id index, inspect the target ID, then "
+                    "use patch_slide_element for a targeted repair. patch_html is reserved "
+                    "for a single shared body/.slide-content/class-level container."
+                ),
+            }
+        ]
+        observation.is_error = False
+        return observation
+
+    def _circuit_open_observation(self, tool_call: ToolCall) -> ChatMessage | None:
+        """Reject a patch_html retry after its failure circuit has opened."""
+        if tool_call.function.name != "patch_html":
+            return None
+        if self._patch_html_failures.get(self._tool_signature(tool_call), 0) < 2:
+            return None
+        return ChatMessage(
+            role=Role.TOOL,
+            content=(
+                "PATCH_HTML_CIRCUIT_OPEN: this exact failed patch_html call is blocked. "
+                "Do not retry it. Enumerate inspect_slide_element(path), select a real "
+                "data-slidex-id, inspect that element, and use patch_slide_element; only "
+                "use patch_html for one shared body/.slide-content/class-level container."
+            ),
+            tool_call_id=tool_call.id,
+            is_error=False,
+        )
+
     async def execute(self, tool_calls: list[ToolCall]) -> str | list[ChatMessage]:
         coros = []
         observations: list[ChatMessage] = []
         used_tools = set()
+        executable_calls = tool_calls
+        if len(tool_calls) > MAX_TOOLCALL_PER_TURN:
+            info(
+                "%s Agent executes %s tool calls in bounded batches of %s",
+                self.name, len(tool_calls), MAX_TOOLCALL_PER_TURN,
+            )
         finish_id = None
         outcome = None
-        for t in tool_calls:
+        for t in executable_calls:
+            circuit_observation = self._circuit_open_observation(t)
+            if circuit_observation is not None:
+                observations.append(circuit_observation)
+                continue
             arguments = t.function.arguments
             if len(arguments) == 0:
                 arguments = None
             else:
                 try:
-                    assert len(tool_calls) <= MAX_TOOLCALL_PER_TURN, (
-                        f"Too many tool calls ({len(tool_calls)}), max allowed is {MAX_TOOLCALL_PER_TURN}"
-                    )
                     arguments = get_json_from_response(t.function.arguments)
                     assert isinstance(arguments, dict), (
                         f"Tool call arguments must be a dict or empty, while {arguments} is given"
@@ -312,7 +413,17 @@ class Agent:
             info(f"{self.name} Agent calling tool `{t.function.name}`")
             coros.append(self.agent_env.tool_execute(t))
 
-        observations.extend(await asyncio.gather(*coros))
+        for start in range(0, len(coros), MAX_TOOLCALL_PER_TURN):
+            observations.extend(
+                await asyncio.gather(*coros[start : start + MAX_TOOLCALL_PER_TURN])
+            )
+        tool_call_map = {t.id: t for t in executable_calls}
+        observations = [
+            self._edit_failure_observation(tool_call_map[obs.tool_call_id], obs)
+            if obs.tool_call_id in tool_call_map
+            else obs
+            for obs in observations
+        ]
         for obs in observations:
             if obs.has_image:
                 if "gemini" in self.model.lower() or "qwen" in self.model.lower():
@@ -332,7 +443,6 @@ class Agent:
 
         self.chat_history.extend(observations)
 
-        tool_call_map = {t.id: t for t in tool_calls}
         for o in observations:
             if o.is_error:
                 t = tool_call_map[o.tool_call_id]

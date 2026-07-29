@@ -52,10 +52,68 @@ def _computed(artifact: SlideArtifact) -> list[ComputedSlideElement] | None:
     ]
 
 
+# Class/id name fragments that conventionally mark purely decorative layers
+# (full-bleed grids, glows, gradient washes) when the model omits the
+# canonical `data-slidex-role`/`allow_overlap` markers. This is a heuristic
+# fallback, not a replacement for explicit semantic roles.
+_DECORATIVE_NAME_HINTS = (
+    "bg-",
+    "background",
+    "decoration",
+    "decorative",
+    "glow",
+    "grid-overlay",
+    "gradient-wash",
+    "noise-overlay",
+    "accent",
+    "divider",
+    "rule",
+    "underline",
+)
+
+
+def _looks_decorative_by_name(element: ComputedSlideElement) -> bool:
+    # `style` carries no class/DOM metadata on the browser-observed path
+    # (only computed CSS values), so the element ID -- which models already
+    # name semantically, e.g. `bg-grid`, `bg-glow-left` -- is the only
+    # reliable signal available for this heuristic fallback.
+    haystack = element.element_id.lower()
+    return any(hint in haystack for hint in _DECORATIVE_NAME_HINTS)
+
+
+# Fraction of page width/height within which a box is considered to span the
+# full canvas (accounts for sub-pixel rounding from the browser layout engine).
+_FULL_CANVAS_TOLERANCE_PX = 2.0
+
+
+def _is_full_canvas_box(element: ComputedSlideElement) -> bool:
+    """True when the element's visible box covers the entire slide canvas.
+
+    This covers both the slide root container itself (which models
+    routinely tag with `data-slidex-id`, making it indistinguishable from a
+    normal top-level element by `parent_id` alone) and deliberate full-bleed
+    background layers. Neither should be checked for overlap with siblings
+    or for violating the page's own safe margins -- a canvas-sized box is
+    the page, not content placed on the page.
+    """
+    box = element.visible_bbox or element.bbox
+    if box is None:
+        return False
+    return (
+        box.x <= _FULL_CANVAS_TOLERANCE_PX
+        and box.y <= _FULL_CANVAS_TOLERANCE_PX
+        and box.width >= box.page_width - _FULL_CANVAS_TOLERANCE_PX
+        and box.height >= box.page_height - _FULL_CANVAS_TOLERANCE_PX
+    )
+
+
 def _skip_decorative(element: ComputedSlideElement) -> bool:
-    return element.semantic_role in {"background", "decoration"} or element.style.get(
-        "allow_overlap"
-    ) in {True, "true"}
+    return (
+        element.semantic_role in {"background", "decoration"}
+        or element.style.get("allow_overlap") in {True, "true"}
+        or element.style.get("full_bleed") in {True, "true"}
+        or _looks_decorative_by_name(element)
+    )
 
 
 @dataclass
@@ -96,7 +154,10 @@ class OverlapInspector:
             [
                 e
                 for e in elements
-                if e.visible and e.visible_bbox and not _skip_decorative(e)
+                if e.visible
+                and e.visible_bbox
+                and not _skip_decorative(e)
+                and not _is_full_canvas_box(e)
             ],
             2,
         ):
@@ -168,6 +229,7 @@ class AlignmentInspector:
 
     tolerance_px: float = 2
     minimum_peers: int = 3
+    min_size_ratio: float = 0.3
     name: str = "geometry.alignment"
     version: str = "1.0"
     defect_class: DefectClass = DefectClass.G3
@@ -188,13 +250,25 @@ class AlignmentInspector:
         failures: list[InspectionResult] = []
         groups: dict[tuple[str | None, str | None], list[ComputedSlideElement]] = {}
         for item in elements:
-            if item.visible and item.bbox and not _skip_decorative(item):
+            if (
+                item.visible
+                and item.bbox
+                and not _skip_decorative(item)
+                and not _is_full_canvas_box(item)
+            ):
                 groups.setdefault((item.parent_id, item.semantic_role), []).append(item)
         applicable = False
         for peers in groups.values():
             if len(peers) < self.minimum_peers:
                 continue
             applicable = True
+            size_dims = {
+                "left": lambda b: b.width,
+                "right": lambda b: b.width,
+                "center": lambda b: b.width,
+                "top": lambda b: b.height,
+                "bottom": lambda b: b.height,
+            }
             for edge, getter in {
                 "left": lambda b: b.x,
                 "right": lambda b: b.x + b.width,
@@ -202,20 +276,35 @@ class AlignmentInspector:
                 "top": lambda b: b.y,
                 "bottom": lambda b: b.y + b.height,
             }.items():
-                values = sorted(getter(item.bbox) for item in peers)
+                size_getter = size_dims[edge]
+                sizes = sorted(size_getter(item.bbox) for item in peers)
+                size_median = sizes[len(sizes) // 2] or 1.0
+                # A peer whose extent on this edge's axis is far smaller than
+                # the group's typical extent (e.g. a thin accent bar next to
+                # full-width text blocks) is not a meaningful alignment
+                # comparison target for this edge -- it is excluded from both
+                # the reference set and the outlier check on this axis only.
+                comparable = [
+                    item
+                    for item in peers
+                    if size_getter(item.bbox) / size_median >= self.min_size_ratio
+                ]
+                if len(comparable) < self.minimum_peers:
+                    continue
+                values = sorted(getter(item.bbox) for item in comparable)
                 median = values[len(values) // 2]
                 inliers = [
                     item
-                    for item in peers
+                    for item in comparable
                     if abs(getter(item.bbox) - median) <= self.tolerance_px
                 ]
                 # Alignment is evidence of one outlier against an otherwise coherent
                 # sibling group. Two coincident elements inside a heterogeneous layout
                 # are not enough to classify every other element as defective.
-                required_inliers = max(self.minimum_peers - 1, len(peers) - 1)
+                required_inliers = max(self.minimum_peers - 1, len(comparable) - 1)
                 if len(inliers) < required_inliers:
                     continue
-                for item in peers:
+                for item in comparable:
                     offset = getter(item.bbox) - median
                     if abs(offset) <= self.tolerance_px:
                         continue
@@ -289,7 +378,7 @@ class MarginInspector:
                 not item.visible
                 or not item.visible_bbox
                 or _skip_decorative(item)
-                or item.style.get("full_bleed") in {True, "true"}
+                or _is_full_canvas_box(item)
             ):
                 continue
             box = item.visible_bbox
@@ -441,9 +530,25 @@ class RenderOverflowInspector:
             ]
         failures = []
         for item in elements:
+            if _skip_decorative(item) or _is_full_canvas_box(item):
+                # Deliberate full-bleed/decorative layers (glows, gradient
+                # washes) are routinely painted larger than their visual
+                # extent and clipped by the canvas; their own bleed is not a
+                # content overflow defect. The canvas root itself also
+                # inherits `document.scrollWidth/Height` inflated by those
+                # same decorative children bleeding past the page edge, so
+                # it must not be judged as "overflowing" against itself.
+                continue
             overflow_x = item.scroll_width - item.client_width
             overflow_y = item.scroll_height - item.client_height
-            child_boxes = [child.bbox for child in item.children if child.bbox]
+            # Decorative children (e.g. a glow deliberately bleeding past the
+            # canvas edge) must not make their parent look like it has
+            # overflowing content -- only non-decorative children count.
+            child_boxes = [
+                child.bbox
+                for child in item.children
+                if child.bbox and not _skip_decorative(child)
+            ]
             child_outside = (
                 any(
                     box.x < item.bbox.x - self.tolerance_px

@@ -39,7 +39,10 @@ async def convert_to_markdown(file_path: str, output_folder: str) -> dict:
     """Convert a file to markdown, it could accept pdf, docx, doc, etc.
     Args:
         file_path: The path of the file to be converted
-        output_folder: The folder to save the converted markdown and images, should be empty or not exist
+        output_folder: A dedicated subfolder for this conversion's markdown+images,
+            e.g. "converted/<name>" -- do NOT pass the workspace root or another
+            folder that already holds unrelated files; it is created if missing.
+            Only the target `<name>.md` file inside it must not already exist.
 
     Returns:
         The converted results, with file saved to the specified path
@@ -47,12 +50,14 @@ async def convert_to_markdown(file_path: str, output_folder: str) -> dict:
 
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
-    assert len(list(output_path.iterdir())) == 0, (
-        f"Output folder {output_folder} is not empty"
-    )
     assert os.path.exists(file_path), f"Error: file {file_path} does not exist"
 
     markdown_file = output_path / f"{Path(file_path).stem}.md"
+    assert not markdown_file.exists(), (
+        f"{markdown_file} already exists; pass a different output_folder or "
+        "remove the stale file before retrying, e.g. a fresh subfolder such "
+        "as 'converted/<name>' rather than the workspace root"
+    )
 
     if file_path.lower().endswith(".pdf") and (MINERU_API_KEY or MINERU_API_URL):
         if MINERU_API_KEY:

@@ -21,12 +21,14 @@ from deeppresenter.slidex.inspectors import (
     OverlapInspector,
     ReferenceInspector,
     RenderAnomalyInspector,
+    RenderOnlyGeometryInspector,
     RenderOverflowInspector,
     TerminologyInspector,
     TitleBodyMismatchInspector,
     TypographyInspector,
     inspect_safely,
 )
+from deeppresenter.slidex.inspectors.neural import _RENDER_ONLY_DEFINITIONS
 from deeppresenter.slidex.inspectors.base import Inspector
 from deeppresenter.slidex.models import (
     ArtifactTrust,
@@ -41,6 +43,7 @@ from deeppresenter.slidex.models import (
     RepairHint,
     RouteRecord,
     SlideArtifact,
+    WholeRubricVerdict,
 )
 from deeppresenter.slidex.router import (
     EvidenceAvailability,
@@ -73,6 +76,125 @@ class SymbolicCritic:
         ]
         return _report(
             artifact,
+            results,
+            router_version=self.router_version,
+            taxonomy_version=self.taxonomy_version,
+        )
+
+
+class GenericWholeRubricCritic:
+    """Phase 13 E2E ``generic critic`` control: one whole-rubric VLM verdict.
+
+    Unlike :class:`HybridCritic` (frozen symbolic-neural-reference router),
+    this issues exactly one VLM call per slide asking it to find any
+    presentation-quality defect using its own judgment over the full 13-class
+    taxonomy, with no per-class routing or reference-assisted comparison.
+    This isolates the causal contribution of the frozen router/reference
+    machinery from merely having *some* automated critic in the loop (13.7).
+    """
+
+    _WHOLE_RUBRIC_TAXONOMY = (
+        "G1 text overflowing its container; G2 elements overlapping; "
+        "G3 misaligned elements; G4 illegible or inconsistent font sizing; "
+        "G5 off-palette/clashing colors; G6 content crossing the safe margin "
+        "or bleeding off the slide; G7 elements crammed together without "
+        "breathing room; S1 body text unrelated to the slide title; "
+        "S3 inconsistent terminology for the same concept; S4 text far too "
+        "dense to read at a glance; S5 a logically necessary section "
+        "missing; S6 an image contradicting its caption or nearby text; "
+        "S2 (narrative ordering) is out of scope for a single-slide view."
+    )
+
+    def __init__(self, *, critic_model: LLM, router_version: str = "1.0", taxonomy_version: str = "1.0") -> None:
+        self.client = AtomicNeuralClient(critic_model, require_multimodal=True)
+        self.router_version = router_version
+        self.taxonomy_version = taxonomy_version
+
+    async def inspect(self, context: InspectionContext) -> InspectionReport:
+        render_path = context.render_path
+        if not render_path:
+            # No render evidence: whole-rubric VLM has nothing to look at.
+            result = InspectionResult(
+                defect_class=DefectClass.G1,
+                status=InspectionStatus.DEFER,
+                severity=0.0,
+                confidence=0.0,
+                evidence=[
+                    Evidence(
+                        source=EvidenceSource.MODEL,
+                        detail="generic critic requires a rendered slide image",
+                    )
+                ],
+                inspector_version="generic-whole-rubric-v1",
+            )
+            return _report(
+                context.artifact,
+                [result],
+                router_version=self.router_version,
+                taxonomy_version=self.taxonomy_version,
+            )
+        prompt = (
+            "Inspect this single presentation slide for ANY presentation-quality "
+            "defect using your own judgment. Consider the full defect taxonomy: "
+            f"{self._WHOLE_RUBRIC_TAXONOMY} Report every defect you find with its "
+            "class, severity, confidence, and localizing evidence; if you find "
+            "nothing wrong, return overall_verdict=pass with an empty findings list."
+        )
+        response = await self.client.model.run(
+            [
+                {
+                    "role": "user",
+                    "content": self.client.build_content(prompt, [render_path]),
+                }
+            ],
+            response_format=WholeRubricVerdict,
+            retry_times=1,
+        )
+        raw = response.choices[0].message.content or ""
+        verdict = WholeRubricVerdict.model_validate_json(raw)
+        results = [
+            InspectionResult(
+                defect_class=finding.defect_class,
+                status=InspectionStatus.FAIL,
+                severity=finding.severity,
+                confidence=finding.confidence,
+                evidence=[
+                    Evidence(source=EvidenceSource.MODEL, detail=detail)
+                    for detail in finding.evidence
+                ],
+                element_ids=finding.element_ids,
+                repair_hint=finding.repair_suggestion,
+                inspector_version="generic-whole-rubric-v1",
+            )
+            for finding in verdict.findings
+        ]
+        found_classes = {item.defect_class for item in results}
+        for defect_class in DefectClass:
+            if defect_class in found_classes or defect_class is DefectClass.S2:
+                continue
+            status = (
+                InspectionStatus.DEFER
+                if verdict.overall_verdict == "defer"
+                else InspectionStatus.PASS
+            )
+            results.append(
+                InspectionResult(
+                    defect_class=defect_class,
+                    status=status,
+                    severity=0.0,
+                    confidence=0.5,
+                    evidence=[
+                        Evidence(
+                            source=EvidenceSource.MODEL,
+                            detail=verdict.defer_reason
+                            or "whole-rubric pass reported no defect of this class",
+                        )
+                    ],
+                    inspector_version="generic-whole-rubric-v1",
+                )
+            )
+        return _report(
+            context.artifact,
             results,
             router_version=self.router_version,
             taxonomy_version=self.taxonomy_version,
@@ -193,6 +315,7 @@ class HybridCritic:
                 "image-text-contradiction",
                 "unresolved-render-anomaly",
                 "reference-assisted",
+                "render-only-geometry",
             }:
                 current = [
                     await self._inspect_async(inspector, context, decision.defect_class)
@@ -264,6 +387,10 @@ class HybridCritic:
             return RenderAnomalyInspector(client, _first_content_id(context.artifact))
         if name == "reference-assisted":
             return ReferenceInspector(client)
+        if name == "render-only-geometry":
+            return RenderOnlyGeometryInspector(
+                client, defect_class, _RENDER_ONLY_DEFINITIONS.get(defect_class, defect_class.value)
+            )
         return None
 
     @staticmethod

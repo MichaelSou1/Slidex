@@ -255,6 +255,16 @@ class FrozenCriticRouter:
                 reason="Open-world image-only downgrade to an atomic VLM predicate.",
                 capability_limit=limit,
             )
+        # G1-G6, S2, S3, S5 normally need computed_ir/native XML; on image-only
+        # trust, fall back to one atomic VLM query over the render instead of
+        # deferring unconditionally, matching the disclosed capability_limit.
+        if "render" in available:
+            return RouteDecision(
+                defect_class=defect_class,
+                stages=[RouteStage(inspector="render-only-geometry", evidence=["render"])],
+                reason="Open-world image-only downgrade to an atomic VLM predicate.",
+                capability_limit=limit,
+            )
         return RouteDecision(
             defect_class=defect_class,
             reason="No reliable inspector is available without native structure.",

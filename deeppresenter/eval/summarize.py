@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .io import write_immutable
-from .metrics import paired_effect, summarize
+from .metrics import mixed_effects_logistic, paired_effect, summarize
 from .models import Arm, BenchmarkManifest, EvaluationResult
 
 
@@ -67,6 +67,15 @@ def summarize_paired_runs(
         ]
 
     hybrid = endpoint(by_arm[Arm.HYBRID])
+    clusters_by_case = {case.case_id: case.parent_deck_id for case in manifest.cases}
+    clusters = [clusters_by_case[case_id] for case_id in case_ids]
+
+    def mixed_effects_vs(control_arm: Arm) -> dict[str, float]:
+        control = endpoint(by_arm[control_arm])
+        outcomes = control + hybrid
+        treatment = [False] * len(control) + [True] * len(hybrid)
+        return mixed_effects_logistic(outcomes, treatment, clusters * 2)
+
     report: dict[str, object] = {
         "schema_version": "1.0",
         "manifest_hash": manifest.manifest_hash,
@@ -82,6 +91,10 @@ def summarize_paired_runs(
                 endpoint(by_arm[Arm.NO_CRITIC]), hybrid
             ),
             "hybrid_vs_generic": paired_effect(endpoint(by_arm[Arm.GENERIC]), hybrid),
+        },
+        "mixed_effects_logistic": {
+            "hybrid_vs_no_critic": mixed_effects_vs(Arm.NO_CRITIC),
+            "hybrid_vs_generic": mixed_effects_vs(Arm.GENERIC),
         },
     }
     write_immutable(output_path, report)

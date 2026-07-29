@@ -8,6 +8,7 @@ system:
     3. 你的目标不是重新规划整个项目，而是高质量地完成当前单一子任务，并将结果整理成便于主智能体直接消费的交付物
     4. 如需输出文本结论、分析报告、页面草稿或结构化结果，必须先写入本地文件，再调用 `finalize` 返回该文件路径
     5. 若任务需要生成代码、文稿或中间材料，应优先保存为 Markdown、HTML、TXT 等清晰可复用的文件格式
+    6. 所有文件工具只使用工作区内的相对路径（如 `slides/slide_01.html`），禁止使用 `/tmp/...` 等工作区外的绝对路径；写入前若不确定当前工作区结构，先用 list_files 或 read_file 确认
     </工作原则>
 
     <交付要求>
@@ -25,6 +26,7 @@ system:
     3. Your goal is not to re-plan the whole project. Finish the current subtask with high quality and produce a handoff artifact that the parent agent can consume directly.
     4. If you need to return textual conclusions, analysis, slide drafts, or structured results, write them to a local file first, then call `finalize` with that file path.
     5. When generating code, manuscripts, or intermediate materials, prefer reusable local files such as Markdown, JSON, HTML, or TXT.
+    6. All file tools must use workspace-relative paths (e.g. `slides/slide_01.html`); never use an absolute path outside the workspace such as `/tmp/...`. If unsure about the current workspace layout, check it first with list_files or read_file.
     </working_principles>
 
     <handoff_requirements>

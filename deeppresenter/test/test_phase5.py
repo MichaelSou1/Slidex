@@ -1,5 +1,6 @@
 import hashlib
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 import json
@@ -283,7 +284,9 @@ async def test_failure_attribution_reproduces_abc_and_budget(tmp_path: Path):
 
 
 @pytest.mark.unit
-def test_fake_openai_server_receives_schema_and_429_becomes_error():
+def _fake_server_with_status_sequence(statuses_before_pass):
+    """Fake OpenAI-compatible server returning `statuses_before_pass` error
+    responses (one per request) before finally returning a passing verdict."""
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -291,8 +294,10 @@ def test_fake_openai_server_receives_schema_and_429_becomes_error():
             length = int(self.headers.get("content-length", "0"))
             payload = json.loads(self.rfile.read(length))
             requests.append((self.path, payload))
-            if len(requests) == 2:
-                self.send_response(429)
+            request_index = len(requests) - 1
+            if request_index < len(statuses_before_pass):
+                status = statuses_before_pass[request_index]
+                self.send_response(status)
                 self.send_header("content-type", "application/json")
                 self.end_headers()
                 self.wfile.write(
@@ -332,6 +337,13 @@ def test_fake_openai_server_receives_schema_and_429_becomes_error():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    return server, thread, requests
+
+
+def test_single_429_is_auto_retried_despite_retry_times_one():
+    """A transient 429 must not fail a retry_times=1 (deterministic) call:
+    it has its own bounded retry budget decoupled from retry_times."""
+    server, thread, requests = _fake_server_with_status_sequence([429])
     try:
         model = LLM(
             base_url=f"http://127.0.0.1:{server.server_port}/v1",
@@ -342,16 +354,48 @@ def test_fake_openai_server_receives_schema_and_429_becomes_error():
             client_kwargs={"max_retries": 0},
         )
         client = AtomicNeuralClient(model)
-        verdict, _ = __import__("asyncio").run(
-            client.inspect(DefectClass.S1, "single defect", {"title": "x"})
-        )
-        assert verdict.verdict == "pass"
-        assert requests[0][0] == "/v1/chat/completions"
-        assert requests[0][1]["response_format"]["type"] == "json_schema"
-        with pytest.raises(ValueError, match="429"):
-            __import__("asyncio").run(
+        with patch(
+            "deeppresenter.utils.config.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            verdict, _ = __import__("asyncio").run(
                 client.inspect(DefectClass.S1, "single defect", {"title": "x"})
             )
+        assert verdict.verdict == "pass"
+        assert len(requests) == 2
+        assert requests[1][0] == "/v1/chat/completions"
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_persistent_429_exhausts_rate_limit_budget_and_becomes_error():
+    """If 429s never clear within the dedicated rate-limit retry budget, the
+    call must still fail (429 tolerance is bounded, not infinite)."""
+    from deeppresenter.utils.constants import RATE_LIMIT_RETRY_TIMES
+
+    server, thread, requests = _fake_server_with_status_sequence(
+        [429] * (RATE_LIMIT_RETRY_TIMES + 1)
+    )
+    try:
+        model = LLM(
+            base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            model="fake",
+            api_key="fake",
+            is_multimodal=False,
+            sampling_parameters={"temperature": 0, "top_p": 1, "seed": 42},
+            client_kwargs={"max_retries": 0},
+        )
+        client = AtomicNeuralClient(model)
+        with patch(
+            "deeppresenter.utils.config.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            with pytest.raises(ValueError, match="429"):
+                __import__("asyncio").run(
+                    client.inspect(DefectClass.S1, "single defect", {"title": "x"})
+                )
+        assert len(requests) == RATE_LIMIT_RETRY_TIMES
     finally:
         server.shutdown()
         thread.join()

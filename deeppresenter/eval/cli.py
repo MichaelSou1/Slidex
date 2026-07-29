@@ -24,7 +24,7 @@ from .models import (
 from .pipeline import DatasetPipeline, PreparationStage, run_render_stage
 from .prepare import prepare_manifest
 from .preregister import freeze_preregistration
-from .runner import EvaluationRunner, replay_case
+from .runner import EvaluationRunner, replay_case, replay_case_live
 from .summarize import summarize_paired_runs, summarize_run
 from .slideaudit import (
     SLIDEAUDIT_DATASET_ID,
@@ -32,6 +32,7 @@ from .slideaudit import (
     freeze_slideaudit_sample,
 )
 from .zenodo10k import ZENODO10K_REVISION, freeze_zenodo10k_sample
+from .tasks import build_task_corpus
 
 app = typer.Typer(
     help="Prepare, run, and summarize frozen Slidex evaluations.", no_args_is_help=True
@@ -74,29 +75,49 @@ def run_command(
     concurrency: Annotated[int, typer.Option(min=1)] = 1,
     rerun_failed: Annotated[bool, typer.Option()] = False,
     output_dir: Annotated[Path | None, typer.Option()] = None,
+    real_models: Annotated[
+        bool,
+        typer.Option(
+            help="Call the frozen Friday/Ark endpoints instead of leaving cases MISSING."
+        ),
+    ] = False,
+    config_path: Annotated[Path | None, typer.Option(exists=True, readable=True)] = None,
+    limit: Annotated[
+        int | None, typer.Option(help="Only run the first N cases; 0/omitted runs all.")
+    ] = None,
 ) -> None:
-    """Run harness records. Real executors are selected by configured plugins; default is explicit missing."""
+    """Run harness records against real models (--real-models) or leave cases MISSING."""
     manifest = BenchmarkManifest.model_validate_json(
         manifest_path.read_text(encoding="utf-8")
     )
+    if limit:
+        manifest = manifest.model_copy(update={"cases": manifest.cases[:limit]})
     run_id = content_hash(
         {"manifest": manifest.manifest_hash, "suite": suite, "arm": arm, "seed": seed}
     )[:24]
-    record = EvaluationRun(
-        run_id=run_id,
-        suite=suite,
-        arm=arm,
-        seed=seed,
-        manifest_hash=manifest.manifest_hash or "unfrozen",
-        config_hash="unconfigured",
-        environment=capture_environment(),
-        git_commit=git_commit(),
-        judge_model=ModelRecord(
-            provider="ark",
-            model=os.getenv("ARK_JUDGE_MODEL", "doubao-seed-2-1-turbo-260628"),
-            capabilities={"text": True, "vision": True, "structured_output": True},
-        ),
-    )
+    existing_run_path = (output_dir or default_cache_dir() / "runs") / run_id / "run.json"
+    if existing_run_path.exists():
+        # Resuming (e.g. --rerun-failed) must reuse the frozen run record verbatim;
+        # a fresh started_at would make the immutable run.json write non-idempotent.
+        record = EvaluationRun.model_validate_json(
+            existing_run_path.read_text(encoding="utf-8")
+        )
+    else:
+        record = EvaluationRun(
+            run_id=run_id,
+            suite=suite,
+            arm=arm,
+            seed=seed,
+            manifest_hash=manifest.manifest_hash or "unfrozen",
+            config_hash="unconfigured",
+            environment=capture_environment(),
+            git_commit=git_commit(),
+            judge_model=ModelRecord(
+                provider="ark",
+                model=os.getenv("ARK_JUDGE_MODEL", "doubao-seed-2-1-turbo-260628"),
+                capabilities={"text": True, "vision": True, "structured_output": True},
+            ),
+        )
 
     async def unavailable(case, run):
         return CaseResult(
@@ -105,12 +126,97 @@ def run_command(
             error="No evaluation executor configured",
         )
 
+    if real_models:
+        from .executors import run_intrinsic_case
+        from .real_executors import build_real_executors
+
+        executors = build_real_executors(
+            default_cache_dir(), str(config_path) if config_path else None
+        )
+        critic_call = executors.call_for_arm(arm)
+        record.models["critic"] = ModelRecord(
+            provider=executors.critic_model.provider,
+            model=executors.critic_model.model or "unknown",
+            capabilities=executors.critic_model.capabilities.model_dump(mode="json"),
+        )
+
+        async def real(case, run):
+            try:
+                return await run_intrinsic_case(case, run, critic_call)
+            except Exception as exc:  # surface as ERROR, never a silent pass
+                return CaseResult(case_id=case.case_id, outcome=Outcome.ERROR, error=str(exc))
+
+        executor = real
+    else:
+        executor = unavailable
+
     result = asyncio.run(
         EvaluationRunner(output_dir or default_cache_dir() / "runs", concurrency).run(
-            manifest, record, unavailable, rerun_failed=rerun_failed
+            manifest, record, executor, rerun_failed=rerun_failed
         )
     )
     typer.echo(json.dumps({"run_id": run_id, "result_hash": result.immutable_hash}))
+
+
+@app.command(name="e2e-run")
+def e2e_run_command(
+    corpus_path: Annotated[Path, typer.Argument(exists=True, readable=True)],
+    output_dir: Annotated[Path, typer.Option()],
+    split: Annotated[str | None, typer.Option()] = None,
+    seeds: Annotated[str, typer.Option(help="Comma-separated seeds, e.g. 0,1,2")] = "0,1,2",
+    concurrency: Annotated[int, typer.Option(min=1)] = 1,
+    max_repairs: Annotated[int, typer.Option(min=0)] = 3,
+    model_budget: Annotated[int, typer.Option(min=1)] = 3,
+    rerun_failed: Annotated[bool, typer.Option()] = False,
+    config_path: Annotated[Path | None, typer.Option(exists=True, readable=True)] = None,
+    workspace_root: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Run the 13.7 three-arm paired E2E benchmark against real models.
+
+    Builds a seed-expanded manifest from the frozen 120-task corpus, then for
+    every (task, seed) pair generates exactly one first-round artifact and
+    forks it into no_critic/generic/hybrid arms sharing the same generation
+    model, seed, and repair/model budget. Writes one EvaluationResult per arm
+    under ``output_dir``, directly consumable by
+    ``pptagent eval summarize-paired``.
+    """
+    from .e2e import build_e2e_manifest, run_e2e_manifest
+
+    seed_list = [int(item) for item in seeds.split(",") if item.strip() != ""]
+    manifest = build_e2e_manifest(corpus_path, split=split, seeds=seed_list)
+    resolved_config = str(config_path) if config_path else "deeppresenter/config.yaml"
+    results = run_e2e_manifest(
+        manifest,
+        config_path=resolved_config,
+        corpus_dir=corpus_path.parent,
+        workspace_root=workspace_root or (default_cache_dir() / "eval" / "e2e_workspaces"),
+        output_dir=output_dir,
+        max_repairs=max_repairs,
+        model_budget=model_budget,
+        concurrency=concurrency,
+        rerun_failed=rerun_failed,
+        git_commit=git_commit(),
+        environment=capture_environment(),
+    )
+    manifest_path = output_dir / f"e2e-manifest-{manifest.manifest_hash[:16]}.json"
+    manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
+    typer.echo(
+        json.dumps(
+            {
+                "manifest_path": str(manifest_path),
+                "manifest_hash": manifest.manifest_hash,
+                "runs": {
+                    arm.value: {
+                        "run_id": result.run.run_id,
+                        "result_path": str(output_dir / result.run.run_id / "result.json"),
+                        "result_hash": result.immutable_hash,
+                        "num_cases": len(result.results),
+                    }
+                    for arm, result in results.items()
+                },
+            }
+        )
+    )
 
 
 @app.command(name="summarize")
@@ -140,6 +246,15 @@ def replay_command(
     result_path: Annotated[Path, typer.Argument(exists=True, readable=True)],
     case_id: Annotated[str, typer.Option()],
     cache_dir: Annotated[Path | None, typer.Option()] = None,
+    real_models: Annotated[
+        bool,
+        typer.Option(
+            help="Also re-execute the case against the real critic executor and "
+            "diff the outcome/predicted_defects against the frozen record, "
+            "instead of only checking immutable lineage."
+        ),
+    ] = False,
+    config_path: Annotated[Path | None, typer.Option(exists=True, readable=True)] = None,
 ) -> None:
     """Verify the immutable artifact lineage required to replay one case."""
     from .models import EvaluationResult
@@ -150,9 +265,24 @@ def replay_command(
     result = EvaluationResult.model_validate_json(
         result_path.read_text(encoding="utf-8")
     )
-    report = replay_case(manifest, result, case_id, cache_dir or default_cache_dir())
+    cache_root = cache_dir or default_cache_dir()
+    if real_models:
+        from .executors import run_intrinsic_case
+        from .real_executors import build_real_executors
+
+        executors = build_real_executors(cache_root, str(config_path) if config_path else None)
+        critic_call = executors.call_for_arm(result.run.arm)
+
+        async def real(case, run):
+            return await run_intrinsic_case(case, run, critic_call)
+
+        report = asyncio.run(
+            replay_case_live(manifest, result, case_id, cache_root, real)
+        )
+    else:
+        report = replay_case(manifest, result, case_id, cache_root)
     typer.echo(json.dumps(report, sort_keys=True))
-    if not report["replayable"]:
+    if not report["replayable"] or not report.get("live_replay_matches", True):
         raise typer.Exit(code=1)
 
 
@@ -299,6 +429,49 @@ def slideaudit_freeze_command(
                 "freeze_hash": frozen["freeze_hash"],
                 "manifest": str(manifest_path),
                 "manifest_hash": manifest.manifest_hash,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+@app.command(name="e2e-tasks-build")
+def e2e_tasks_build_command(
+    output_dir: Annotated[Path | None, typer.Option()] = None,
+    per_type_sealed: Annotated[int, typer.Option(min=1)] = 25,
+    per_type_pilot: Annotated[int, typer.Option(min=0)] = 5,
+    seed: Annotated[int, typer.Option()] = 13,
+) -> None:
+    """Fetch, dedupe, and brief the 120-task E2E corpus (13.6).
+
+    Pulls redistributable metadata/abstracts from arXiv (academic), World
+    Bank Open Data (business), Wikimedia Commons (product), and OpenStax
+    (teaching); normalizes each into Markdown with a source-locator map;
+    drops near-duplicates by MinHash; and writes a structured brief per
+    task. A human expert must still confirm each brief is achievable from
+    its source before the corpus is treated as frozen for sealed testing.
+    """
+    destination = output_dir or default_cache_dir() / "e2e_tasks"
+    manifest = build_task_corpus(
+        destination,
+        per_type_sealed=per_type_sealed,
+        per_type_pilot=per_type_pilot,
+        seed=seed,
+    )
+    by_type_split: dict[str, int] = {}
+    for task in manifest["tasks"]:
+        key = f"{task['task_type']}:{task['split']}"
+        by_type_split[key] = by_type_split.get(key, 0) + 1
+    typer.echo(
+        json.dumps(
+            {
+                "corpus_hash": manifest["corpus_hash"],
+                "total_tasks": len(manifest["tasks"]),
+                "by_type_split": by_type_split,
+                "shortfalls": manifest["shortfalls"],
+                "fetch_errors": manifest["fetch_errors"],
+                "rejected_duplicates": len(manifest["rejected_duplicates"]),
+                "output": str(destination / "e2e_task_corpus.json"),
             },
             sort_keys=True,
         )

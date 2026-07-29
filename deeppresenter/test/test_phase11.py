@@ -127,12 +127,12 @@ def test_frozen_example_assigns_friday_generation_and_ark_judge(
     monkeypatch.setenv("FRIDAY_API_KEY", "friday-test")
     monkeypatch.setenv("ARK_JUDGE_API_KEY", "ark-test")
     config = DeepPresenterConfig.load_from_file("deeppresenter/config.yaml.example")
-    assert config.design_agent.model_name == "gemini-3.6-flash"
+    assert config.design_agent.model_name == "gpt-4o-mini"
     assert config.design_agent._endpoints[0].base_url == (
         "https://aigc.sankuai.com/v1/openai/native"
     )
-    assert config.design_agent.requests_per_minute == 20
-    assert config.critic_model.model_name == "gemini-3.6-flash"
+    assert config.design_agent.requests_per_minute == 200
+    assert config.critic_model.model_name == "gpt-4o-mini"
     assert config.judge_model.model_name == "doubao-seed-2-1-turbo-260628"
     assert config.judge_model._endpoints[0].base_url == (
         "https://ark.cn-beijing.volces.com/api/v3"
@@ -140,8 +140,19 @@ def test_frozen_example_assigns_friday_generation_and_ark_judge(
 
 
 def test_model_role_policy_rejects_generator_or_judge_drift(tmp_path: Path) -> None:
+    # The policy is a self-consistency check against the config's own frozen
+    # snapshot fields, not a hardcoded model name: switching the generation
+    # or judge model only requires updating the endpoint config and its
+    # matching `frozen_*` fields together.
     base = {
-        "slidex": {"enforce_model_role_policy": True},
+        "slidex": {
+            "enforce_model_role_policy": True,
+            "frozen_generation_model": "gemini-3.6-flash",
+            "frozen_generation_base_url": "https://aigc.sankuai.com/v1/openai/native",
+            "frozen_generation_requests_per_minute": 20,
+            "frozen_judge_model": "doubao-seed-2-1-turbo-260628",
+            "frozen_judge_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        },
         "research_agent": _model("research"),
         "long_context_model": _model("long"),
         "design_agent": {
@@ -160,11 +171,63 @@ def test_model_role_policy_rejects_generator_or_judge_drift(tmp_path: Path) -> N
 
     base["design_agent"]["model"] = "other-generator"
     path.write_text(yaml.safe_dump(base), encoding="utf-8")
-    with pytest.raises(ValueError, match="generation policy"):
+    with pytest.raises(ValueError, match="drifted from the frozen generation snapshot"):
         DeepPresenterConfig.load_from_file(str(path))
 
     base["design_agent"]["model"] = "gemini-3.6-flash"
     base["judge_model"]["model"] = "other-judge"
     path.write_text(yaml.safe_dump(base), encoding="utf-8")
-    with pytest.raises(ValueError, match="Judge policy"):
+    with pytest.raises(ValueError, match="drifted from the frozen judge snapshot"):
+        DeepPresenterConfig.load_from_file(str(path))
+
+
+def test_model_role_policy_supports_switching_frozen_snapshot(
+    tmp_path: Path,
+) -> None:
+    """Switching to a new model is a config-only change: update the endpoint
+    and its matching `frozen_*` fields together, with no code edit."""
+    base = {
+        "slidex": {
+            "enforce_model_role_policy": True,
+            "frozen_generation_model": "gpt-4o-mini",
+            "frozen_generation_base_url": "https://example.com/v1",
+            "frozen_generation_requests_per_minute": 200,
+            "frozen_judge_model": "doubao-seed-2-1-turbo-260628",
+            "frozen_judge_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        },
+        "research_agent": _model("research"),
+        "long_context_model": _model("long"),
+        "design_agent": {
+            **_model("gpt-4o-mini"),
+            "base_url": "https://example.com/v1",
+            "requests_per_minute": 200,
+        },
+        "judge_model": {
+            **_model("doubao-seed-2-1-turbo-260628"),
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        },
+    }
+    path = tmp_path / "policy.yaml"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    DeepPresenterConfig.load_from_file(str(path))
+
+
+def test_model_role_policy_requires_frozen_snapshot_fields(tmp_path: Path) -> None:
+    base = {
+        "slidex": {"enforce_model_role_policy": True},
+        "research_agent": _model("research"),
+        "long_context_model": _model("long"),
+        "design_agent": {
+            **_model("gemini-3.6-flash"),
+            "base_url": "https://aigc.sankuai.com/v1/openai/native",
+            "requests_per_minute": 20,
+        },
+        "judge_model": {
+            **_model("doubao-seed-2-1-turbo-260628"),
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        },
+    }
+    path = tmp_path / "policy.yaml"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    with pytest.raises(ValueError, match="frozen generation snapshot"):
         DeepPresenterConfig.load_from_file(str(path))

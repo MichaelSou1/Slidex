@@ -20,6 +20,12 @@ MAX_LOGGING_LENGTH = int(
 
 # ============ Agent  ============
 RETRY_TIMES = int(os.getenv("RETRY_TIMES", 10))
+# Infra-level rate-limit retries are decoupled from RETRY_TIMES: a caller
+# requesting retry_times=1 (deterministic single-shot semantics, e.g. critic
+# and inspector protocols) still gets this many extra attempts specifically
+# for HTTP 429, since a rate limit is a transient infra condition, not a
+# judgment about model output quality.
+RATE_LIMIT_RETRY_TIMES = int(os.getenv("RATE_LIMIT_RETRY_TIMES", 6))
 MAX_TOOLCALL_PER_TURN = int(os.getenv("MAX_TOOLCALL_PER_TURN", 7))
 MAX_RETRY_INTERVAL = int(os.getenv("MAX_RETRY_INTERVAL", 60))
 # count in chars, this is about the first 4 page of a dual-column paper
@@ -92,6 +98,22 @@ You can freely install any required tools, packages, or command-line utilities t
 </Task Guidelines>
 """
 
+# Hard tool-call concurrency limit, shown to every agent regardless of whether
+# it has the `run_command` tool. Any turn emitting more than this many tool
+# calls is rejected outright (see MAX_TOOLCALL_PER_TURN enforcement in
+# agent.py's execute()), so agents that fan work out across many files
+# (e.g. one write_file per slide) must batch across turns instead of firing
+# them all at once, or every call in that turn is dropped and the agent must
+# retry from scratch.
+TOOLCALL_LIMIT_PROMPT = """
+<Toolcall Limit>
+You can call up to {max_toolcall_per_turn} tools per turn, no matter how many files or items remain.
+If you need to touch more than {max_toolcall_per_turn} files/items (e.g. one call per slide), split the work
+across multiple turns instead of issuing every call in a single turn: a turn exceeding the limit
+is rejected in full and none of its tool calls take effect.
+</Toolcall Limit>
+"""
+
 # Long-context understanding and multi-perspective retrieval
 MA_RESEACHER_PROMPT = """
 <Guide on Subagents>
@@ -160,6 +182,16 @@ LAST_ITER_MSG = {
     "text": "<URGENT>Working budget nearly exhausted. You must finish the core task and call `finalize` now, or your work will fail. Skip extras like inspection and validation.</URGENT>",
     "type": "text",
 }
+
+SLIDE_QUOTA_EXCEEDED_MSG_TEMPLATE = (
+    "<URGENT>You have spent {turns} consecutive turns editing/inspecting `{slide}` "
+    "without finishing it. Stop refining this slide for now and move on: write "
+    "(or finish) the remaining slides first. You MUST come back to `{slide}` "
+    "before calling `finalize` and get it to pass `inspect_slide` — export will "
+    "be blocked if any slide was never successfully inspected. Prioritize "
+    "getting every slide through inspection at least once over polishing "
+    "any single slide further.</URGENT>"
+)
 
 MEMORY_COMPACT_MSG = """
 You have reached the context length limit for this conversation. Immediately extract key information from the tool interaction history, generate a complete state summary, and save it to the working directory to ensure seamless continuation in subsequent conversations.

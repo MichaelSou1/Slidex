@@ -24,6 +24,23 @@ def _flatten(elements: list[SlideElement]) -> list[SlideElement]:
     return [item for root in elements for item in [root, *_flatten(root.children)]]
 
 
+def _is_nested_duplicate(left: SlideElement, right: SlideElement) -> bool:
+    """True when one element's text is just a superstring of the other's.
+
+    An ancestor container's flattened text commonly embeds a descendant's
+    full text verbatim (e.g. a card wrapper's text is "<label> <body text>"
+    while a nested child only carries "<body text>"). That is the same
+    content duplicated across the element tree, not two differently worded
+    mentions of the same term, so it must not be treated as an S3 candidate.
+    """
+    left_text = " ".join(left.text.split()).casefold()
+    right_text = " ".join(right.text.split()).casefold()
+    if not left_text or not right_text:
+        return False
+    shorter, longer = sorted((left_text, right_text), key=len)
+    return shorter in longer
+
+
 def normalize_term(term: str) -> str:
     """Normalize case, width, hyphens, plural suffixes, and whitespace."""
     import unicodedata
@@ -86,8 +103,14 @@ class TerminologyInspector:
                 pair = frozenset({left, right})
                 if pair in used or left == right:
                     continue
-                used.add(pair)
                 all_occurrences = occurrences[left] + occurrences[right]
+                if any(
+                    _is_nested_duplicate(left_elem, right_elem)
+                    for _, left_elem, _ in occurrences[left]
+                    for _, right_elem, _ in occurrences[right]
+                ):
+                    continue
+                used.add(pair)
                 ids = [element.element_id for _, element, _ in all_occurrences]
                 suggestion = canonical or max(
                     (left, right),

@@ -73,46 +73,73 @@ class LibreOfficeRenderer:
         )
 
     async def render(
-        self, pptx_path: Path, output_dir: Path
+        self, pptx_path: Path, output_dir: Path, *, timeout_seconds: float = 90.0, retries: int = 2
     ) -> tuple[Path, list[Path], ExportCommandRecord]:
         info = self.info()
         output_dir.mkdir(parents=True, exist_ok=True)
-        args = [
-            "--headless",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            str(output_dir),
-            str(pptx_path.resolve()),
-        ]
-        started = time.perf_counter()
-        process = await asyncio.create_subprocess_exec(
-            str(self.executable),
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate()
-        command = ExportCommandRecord(
-            executable=str(self.executable),
-            arguments=args,
-            version=info.version,
-            return_code=process.returncode or 0,
-            stdout=stdout.decode(errors="replace"),
-            stderr=stderr.decode(errors="replace"),
-            duration_ms=(time.perf_counter() - started) * 1000,
-        )
-        if process.returncode != 0:
-            error = ExportValidationError(
-                f"LibreOffice PPTX render failed: {command.stderr or command.stdout}"
+        # Each concurrent soffice invocation needs its own profile directory:
+        # LibreOffice serializes on a shared user profile lock, so concurrent
+        # headless converts against the default profile silently no-op for
+        # the losers (return code 0, no PDF produced) instead of erroring.
+        last_command: ExportCommandRecord | None = None
+        last_error: Exception | None = None
+        for attempt in range(retries + 1):
+            profile_dir = output_dir / f".soffice-profile-{uuid.uuid4().hex}"
+            args = [
+                "--headless",
+                "--norestore",
+                f"-env:UserInstallation=file://{profile_dir}",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(output_dir),
+                str(pptx_path.resolve()),
+            ]
+            started = time.perf_counter()
+            process = await asyncio.create_subprocess_exec(
+                str(self.executable),
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-            error.command = command
-            raise error
-        pdf_path = output_dir / f"{pptx_path.stem}.pdf"
-        if not pdf_path.exists():
-            raise ExportValidationError("LibreOffice completed without producing a PDF")
-        pages = await self._rasterize(pdf_path, output_dir)
-        return pdf_path, pages, command
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=timeout_seconds
+                )
+            except TimeoutError:
+                process.kill()
+                await process.communicate()
+                stdout, stderr = b"", f"render timed out after {timeout_seconds}s".encode()
+                returncode = -1
+            else:
+                returncode = process.returncode or 0
+            finally:
+                shutil.rmtree(profile_dir, ignore_errors=True)
+            command = ExportCommandRecord(
+                executable=str(self.executable),
+                arguments=args,
+                version=info.version,
+                return_code=returncode,
+                stdout=stdout.decode(errors="replace"),
+                stderr=stderr.decode(errors="replace"),
+                duration_ms=(time.perf_counter() - started) * 1000,
+            )
+            last_command = command
+            pdf_path = output_dir / f"{pptx_path.stem}.pdf"
+            if returncode == 0 and pdf_path.exists():
+                pages = await self._rasterize(pdf_path, output_dir)
+                return pdf_path, pages, command
+            if returncode != 0:
+                last_error = ExportValidationError(
+                    f"LibreOffice PPTX render failed: {command.stderr or command.stdout}"
+                )
+            else:
+                last_error = ExportValidationError(
+                    "LibreOffice completed without producing a PDF"
+                )
+        assert last_error is not None and last_command is not None
+        last_error.command = last_command  # type: ignore[attr-defined]
+        raise last_error
 
     async def _rasterize(self, pdf_path: Path, output_dir: Path) -> list[Path]:
         pdftoppm = shutil.which("pdftoppm")
@@ -611,6 +638,7 @@ def pptx_to_slide_artifacts(
 ) -> list[SlideArtifact]:
     """Create backend-neutral image artifacts from a native PPTX."""
     texts, _, _, _ = extract_pptx_structure(pptx_path, len(page_renders))
+    image_counts = count_pptx_slide_images(pptx_path, len(page_renders))
     source_hash = hashlib.sha256(pptx_path.read_bytes()).hexdigest()
     artifacts: list[SlideArtifact] = []
     for index, render_path in enumerate(page_renders):
@@ -628,6 +656,19 @@ def pptx_to_slide_artifacts(
             for text_index, text in enumerate(texts[index])
             if text.strip()
         ]
+        # Image-only trust artifacts still need a placeholder image element so
+        # S6 image-text-contradiction routing can locate an image/text pair;
+        # the renderer already burned the actual picture into the PNG.
+        elements.extend(
+            SlideElement(
+                element_id=f"{slide_id}-image-{picture_index + 1}",
+                tag="img",
+                element_type="image",
+                semantic_role="image",
+                text="",
+            )
+            for picture_index in range(image_counts[index])
+        )
         render_hash = hashlib.sha256(render_path.read_bytes()).hexdigest()
         artifacts.append(
             SlideArtifact(
@@ -656,6 +697,20 @@ def pptx_to_slide_artifacts(
             )
         )
     return artifacts
+
+
+def count_pptx_slide_images(path: Path, page_count: int) -> list[int]:
+    """Count <p:pic> picture shapes per slide, in slide order."""
+    counts = [0 for _ in range(page_count)]
+    with zipfile.ZipFile(path) as archive:
+        names = set(archive.namelist())
+        for index in range(page_count):
+            slide_name = f"ppt/slides/slide{index + 1}.xml"
+            if slide_name not in names:
+                continue
+            root = ElementTree.fromstring(archive.read(slide_name))
+            counts[index] = sum(1 for node in root.iter() if node.tag.endswith("}pic"))
+    return counts
 
 
 def extract_pptx_structure(

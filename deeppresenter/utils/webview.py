@@ -179,6 +179,20 @@ class Html2PptxError(RuntimeError):
     def __init__(self, message: str, command: "ExportCommandRecord") -> None:
         super().__init__(message)
         self.command = command
+        self.geometry = _extract_geometry_error(message)
+
+
+def _extract_geometry_error(message: str) -> dict[str, object] | None:
+    """Extract html2pptx's machine-readable geometry payload when present."""
+    marker = "SLIDEX_GEOMETRY="
+    if marker not in message:
+        return None
+    payload = message.split(marker, 1)[1].strip().splitlines()[0]
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def _html2pptx_version() -> str:
